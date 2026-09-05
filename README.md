@@ -117,7 +117,7 @@ LLM に渡すのに足る密度があればよく、`<script>`/`<style>` を落�
   この場合は RSS の description（150 文字程度）だけで評価することになり、
   エージェントは「判断材料が不足している」と reason に記した上でスコアを控えめに付ける。
 - **利用モデルはアカウントのモデルアクセスに依存する。**
-  検証に使ったアカウント（017820658462）では Claude Opus 5 / Sonnet 5 / Opus 4.8 は
+  検証に使った AWS アカウントでは Claude Opus 5 / Sonnet 5 / Opus 4.8 は
   `AccessDeniedException`（モデルアクセス未有効）となり、Sonnet 4.6 と Haiku 4.5 のみ利用できた。
   モデルアクセスを有効化すれば `defaults.model_id` の 1 行で切り替わる。
 
