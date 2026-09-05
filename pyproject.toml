@@ -1,0 +1,29 @@
+[project]
+name = "aws-news"
+version = "0.1.0"
+description = "AWS / LLM ベンダーのニュースを担当領域別エージェントが選別・要約して Discord に配信する"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # エージェント本体。AgentCore Runtime への移行を見据えて Strands を採用。
+    # 代替案: LangGraph（状態機械が主役の用途向け。今回は単発の選別＋要約なので不要）
+    "strands-agents>=1.54.0",
+    "boto3>=1.43.0",
+    # RSS/Atom の差異と日付形式（RFC822 / ISO8601）の吸収。
+    # 代替案: xml.etree 自前パース（フィードごとの方言対応を自分で背負うことになる）
+    "feedparser>=6.0.11",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0.2",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.9",
+]
+
+[project.scripts]
+awsnews = "awsnews.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/awsnews"]

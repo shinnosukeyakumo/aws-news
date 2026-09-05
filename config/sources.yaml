@@ -1,0 +1,93 @@
+# ニュースキュレーターの定義。
+# エージェントを増やしたいときは agents: に 1 ブロック追加するだけでよい。
+# コードの変更は不要。
+
+defaults:
+  # Bedrock のクロスリージョン推論プロファイル。
+  # 迷ったらデータレジデンシー要件で選ぶ（jp. = 日本国内固定 / us. = 米国内 / global. = 全世界）
+  model_id: us.anthropic.claude-sonnet-4-6
+  region: us-west-2
+  # 初回実行時、この日数より古い記事は「既読」として登録し通知しない
+  backfill_days: 3
+  # 1 回の実行で 1 エージェントが処理する記事の上限（暴発防止）
+  max_articles_per_run: 12
+  # このスコア未満は Discord に流さない（0-100）
+  min_score: 55
+
+agents:
+  - key: aws-ai
+    name: AWS AI 担当
+    emoji: "🧠"
+    color: 0xFF9900          # AWS オレンジ
+    sources:
+      - type: rss
+        url: https://aws.amazon.com/blogs/machine-learning/feed/
+        label: AWS AI Blog
+    # このエージェントが「何者で、何を重要とみなすか」。選別と要約の両方に効く。
+    charter: |
+      あなたは AWS の生成 AI 領域を追う技術キュレーターだ。
+      読者は AWS 上で LLM アプリケーションとエージェントを開発しているエンジニア。
+      Amazon Bedrock、Bedrock AgentCore、Strands Agents、Amazon Nova、
+      SageMaker の生成 AI 関連機能を最重要とみなす。
+    scoring: |
+      高く評価する: 新機能・新モデルの発表、アーキテクチャの選択を変えうる知見、
+        実装の落とし穴やベンチマークなど再利用できる具体的な情報。
+      低く評価する: 特定業界向けの事例紹介にとどまるもの、
+        既出機能の言い換え、パートナー企業の宣伝色が強いもの。
+
+  - key: aws-whatsnew
+    name: AWS 新機能担当
+    emoji: "📢"
+    color: 0x232F3E          # AWS ダークブルー
+    sources:
+      - type: rss
+        url: https://aws.amazon.com/about-aws/whats-new/recent/feed/
+        label: AWS What's New
+        # What's New は全サービスが流れてくるため、category による前段フィルタが要る。
+        # RSS の category に含まれる文字列で絞り込む（LLM に渡す前の足切り）
+        include_categories:
+          - general:products/aiml
+    charter: |
+      あなたは AWS の新機能アナウンスを追う技術キュレーターだ。
+      読者は AWS 上で LLM アプリケーションとエージェントを開発しているエンジニア。
+      「今日から何ができるようになったか」「既存の構成を変える必要があるか」を伝える。
+    scoring: |
+      高く評価する: Amazon Bedrock、Bedrock AgentCore、SageMaker など生成 AI 関連の
+        新機能・GA・モデル追加。エージェント開発の構成に影響するもの。
+      低く評価する: 生成 AI と無関係なもの、既存機能の軽微なアップデート、
+        特定リージョンへの提供拡大だけを伝える告知。
+      注意: What's New の本文には対応リージョンが書かれていないことが多い。
+        リージョンの記載がないことを理由に減点してはならない。
+
+  - key: llm-vendors
+    name: LLM ベンダー担当
+    emoji: "🔬"
+    color: 0xD4A27F          # Anthropic のブランドカラー系
+    sources:
+      # OpenAI / Google の RSS は description が 150 文字程度しかないため、
+      # 記事ページから本文を取り直す（2026-09-05 実測）
+      - type: rss
+        url: https://openai.com/news/rss.xml
+        label: OpenAI News
+        fetch_body: true
+      - type: rss
+        url: https://blog.google/technology/ai/rss/
+        label: Google AI Blog
+        fetch_body: true
+      # Anthropic は RSS を公開していないため sitemap の lastmod から新着を拾う
+      # （2026-09-05 時点で /rss.xml /feed.xml /news/rss.xml いずれも 404 を確認済み）
+      - type: sitemap
+        url: https://www.anthropic.com/sitemap.xml
+        label: Anthropic
+        path_prefixes:
+          - /news/
+          - /engineering/
+    charter: |
+      あなたは LLM ベンダー各社の発表を追う技術キュレーターだ。
+      読者は Amazon Bedrock 経由で Claude を使い、エージェントを開発しているエンジニア。
+      モデルの世代交代、API の破壊的変更、エージェント開発に効く機能を最重要とみなす。
+    scoring: |
+      高く評価する: 新モデルのリリース、API 仕様の変更、エージェント / ツール利用に関する機能、
+        性能や安全性の技術レポートのうち実装判断に影響するもの。
+      低く評価する: 企業提携・資金調達・人事の告知、一般消費者向けの機能紹介、
+        政策提言やポジショントーク。
