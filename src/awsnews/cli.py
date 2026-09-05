@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import os
 import sys
@@ -50,7 +51,8 @@ def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
         return []
 
     logger.info("[%s] %d 件を評価する", config.key, len(articles))
-    curated = Curator(config).curate(articles)
+    curator = Curator(config)
+    curated = curator.curate(articles)
     to_notify = [c for c in curated if c.curation.score >= config.min_score]
 
     if dry_run:
@@ -70,7 +72,12 @@ def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
             if article.url not in curated_urls:
                 store.mark(config.key, article.url, article.title, None, False)
 
-    logger.info("[%s] 評価 %d 件 / 通知 %d 件", config.key, len(curated), len(to_notify))
+    usage = curator.usage
+    logger.info(
+        "[%s] 評価 %d 件 / 通知 %d 件 / トークン in=%d out=%d (%s)",
+        config.key, len(curated), len(to_notify),
+        usage.input_tokens, usage.output_tokens, config.model_id,
+    )
     return to_notify
 
 
@@ -90,6 +97,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-store", action="store_true",
                         help="既読を記録しない（同じ記事で繰り返し試すとき用）")
     parser.add_argument("--stats", action="store_true", help="既読 DB の統計だけ表示して終わる")
+    # 以下は設定ファイルの値を実行時に上書きする。モデル比較のため。
+    parser.add_argument("--model", help="model_id を上書きする（例: us.amazon.nova-2-lite-v1:0）")
+    parser.add_argument("--reasoning", choices=["off", "low", "medium", "high"],
+                        help="思考モードを上書きする")
+    parser.add_argument("--temperature", type=float, help="temperature を上書きする")
+    parser.add_argument("--min-score", type=int, dest="min_score",
+                        help="通知の閾値を上書きする")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -109,6 +123,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     agents = load_agents(args.config, only=args.agents)
+    overrides = {
+        k: v for k, v in (
+            ("model_id", args.model),
+            ("reasoning_effort", args.reasoning),
+            ("temperature", args.temperature),
+            ("min_score", args.min_score),
+        ) if v is not None
+    }
+    if overrides:
+        agents = [dataclasses.replace(a, **overrides) for a in agents]
+        logger.info("設定を上書き: %s", overrides)
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not args.dry_run and not webhook_url:
         logger.warning("DISCORD_WEBHOOK_URL が未設定。--dry-run 相当で動かす。")

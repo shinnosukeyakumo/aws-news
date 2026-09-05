@@ -18,16 +18,21 @@ class Article(BaseModel):
     categories: list[str] = Field(default_factory=list)
 
     def to_prompt_block(self, body_chars: int = 1800) -> str:
-        """LLM に渡す 1 記事分のテキスト。"""
+        """LLM に渡す 1 記事分のテキスト。
+
+        Nova は長文を先頭・指示を末尾に置いた方が精度が出るため、
+        本文は明示的な区切りで囲んで「参照テキスト」であることを示す。
+        """
         published = self.published_at.strftime("%Y-%m-%d") if self.published_at else "不明"
         return (
-            f"URL: {self.url}\n"
+            "DOCUMENT START\n"
             f"媒体: {self.source_label}\n"
             f"公開日: {published}\n"
             f"原題: {self.title}\n"
             f"カテゴリ: {', '.join(self.categories) if self.categories else 'なし'}\n"
             f"本文（冒頭 {body_chars} 文字までの抜粋。末尾で文が切れていても記事の欠落ではない）:\n"
-            f"{self.summary_raw[:body_chars]}"
+            f"{self.summary_raw[:body_chars]}\n"
+            "DOCUMENT END"
         )
 
 

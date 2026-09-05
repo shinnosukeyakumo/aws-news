@@ -86,13 +86,58 @@ uv run awsnews --stats
 
 | キー | 既定値 | 意味 |
 |---|---|---|
-| `model_id` | `us.anthropic.claude-sonnet-4-6` | Bedrock の推論プロファイル |
+| `model_id` | `us.amazon.nova-2-lite-v1:0` | Bedrock の推論プロファイル |
 | `region` | `us-west-2` | Bedrock のリージョン |
+| `reasoning_effort` | `off` | 思考モード。`off` / `low` / `medium` / `high` |
+| `temperature` | 0.3 | Nova は 0 にすると同じ文を繰り返す癖があるため 0 にしない |
 | `backfill_days` | 3 | この日数より古い記事は対象外 |
 | `max_articles_per_run` | 12 | 1 エージェントが 1 回で評価する上限 |
-| `min_score` | 55 | この点数未満は Discord に流さない |
+| `min_score` | 80 | この点数未満は Discord に流さない |
 
 `defaults` の値はエージェント単位で上書きできる。
+モデル比較のときは実行時にも上書きできる。
+
+```bash
+uv run awsnews --agent llm-vendors --limit 6 --dry-run --no-store --min-score 0 \
+  --model us.anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+## モデル選択（2026-09-05 実測）
+
+同一の記事 6 件（`llm-vendors`）に同じプロンプトで付いたスコア。
+
+| 記事 | Nova 2 Lite | Nova 2 Lite (thinking medium) | Haiku 4.5 | Sonnet 4.6 |
+|---|---|---|---|---|
+| GPT-6 Astra 発表（Bedrock でも提供） | 95 | 95 | 72 | 82 |
+| Gemini 3.8 Flash Cyber / Fairwind | 85 | 85 | 62 | 22 |
+| Playco のゲーム開発事例 | 75 | 85 | 45 | 28 |
+| Legora の財務諸表事例 | 75 | 70 | 35 | 32 |
+| GPT-6 Astra 安全性概要（本文取得不可） | 85 | 70 | 35 | 52 |
+| OpenAI 10 億ドル拠出 | 30 | 20 | 15 | 12 |
+| **所要時間** | 4 秒 | 90 秒 | 25 秒 | 24 秒 |
+
+読み取れること。
+
+- **Nova はスコアが高値に張り付き、判別の粒度が粗い。** `aws-ai` では 12 件中 8 件が
+  同点（85）になり、閾値をどこに置いても中間の切り分けができない。
+  事例紹介（Playco / Legora）にも 75 を付けるため、閾値を 80 まで上げて実用にしている。
+- **thinking を入れても判別力は上がらない。** medium にすると所要時間が 20 倍を超える一方、
+  Playco の事例紹介はむしろ 75 → 85 に上がった。盛れば良いというものではない。
+- **Haiku 4.5 は Nova より判別が効く。** 事例紹介を閾値以下に落とせる。
+- **Sonnet 4.6 が最も基準に忠実。** ただし他モデルより高コスト。
+
+**閾値はモデルとセットで調整すること。** `min_score` の 80 は Nova 前提の値であり、
+Haiku / Sonnet に切り替えるなら 55 前後に戻す。
+
+### 実測コスト（Nova 2 Lite）
+
+全 3 エージェントを 1 回通した実測: 入力 56,262 / 出力 4,924 トークン。
+
+`us-west-2` の Nova 2.0 Lite は入力 $0.33 / 1M、出力 $2.75 / 1M（AWS Price List API より取得）
+なので **1 回あたり約 $0.032**。1 日 2 回なら月 $2 程度に収まる。
+
+Claude Haiku 4.5 / Sonnet 4.6 の Bedrock 価格は、Price List API にも
+公開価格ページにも該当エントリが見つからず、本リポジトリでは確認できていない。
 
 ## 設計上の判断
 
@@ -103,6 +148,17 @@ uv run awsnews --stats
 **要約を `summary` と `impact` に分けている**（`models.py`）。
 1 つのフィールドに詰めると必ず 200 文字を超えて冗長になったため、
 「何が起きたか」と「読者に何が効くか」を分離した。
+
+**モデルごとの方言を `modelspec.py` に閉じ込めている。**
+思考モードの指定フィールドは Nova が `reasoningConfig`、Claude が `thinking` で、
+片方の形式をもう片方に送ると `ValidationException` になる。
+呼び出し側は `reasoning_effort` に `off` / `low` / `medium` / `high` と書くだけでよい。
+
+**プロンプトを Nova 流に構造化している**（`config.py` / `curator.py`）。
+`# Core Mandates` などのセクション見出しと `MUST` / `DO NOT` の命令形を使い、
+記事本文を `DOCUMENT START` / `DOCUMENT END` で囲んで先頭に置き、指示を末尾に置く。
+Nova は Claude 流の自然な依頼文だと精度が落ちるため。この形は Claude に投げても
+精度を落とさないので、モデル別にプロンプトを分けてはいない。
 
 **本文抽出に専用ライブラリを入れていない**（`collect.py`）。
 LLM に渡すのに足る密度があればよく、`<script>`/`<style>` を落として
@@ -118,8 +174,10 @@ LLM に渡すのに足る密度があればよく、`<script>`/`<style>` を落�
   エージェントは「判断材料が不足している」と reason に記した上でスコアを控えめに付ける。
 - **利用モデルはアカウントのモデルアクセスに依存する。**
   検証に使った AWS アカウントでは Claude Opus 5 / Sonnet 5 / Opus 4.8 は
-  `AccessDeniedException`（モデルアクセス未有効）となり、Sonnet 4.6 と Haiku 4.5 のみ利用できた。
-  モデルアクセスを有効化すれば `defaults.model_id` の 1 行で切り替わる。
+  `AccessDeniedException`（モデルアクセス未有効）となり、Sonnet 4.6 / Haiku 4.5 /
+  Nova 系のみ利用できた。`bedrock list-inference-profiles` が `ACTIVE` を返しても
+  モデルアクセスがあるとは限らないため、疎通は実際に `converse` を叩いて確かめること。
+  Nova Premier は Legacy 扱いで `ResourceNotFoundException` になる（EOL 2026-09-14）。
 
 ## ディレクトリ
 
@@ -127,7 +185,8 @@ LLM に渡すのに足る密度があればよく、`<script>`/`<style>` を落�
 config/sources.yaml   エージェントと情報源の定義（増やすのはここ）
 src/awsnews/
   collect.py          RSS / sitemap からの収集と本文抽出（LLM を使わない決定的な処理）
-  curator.py          Strands Agent による選別・要約
+  curator.py          Strands Agent による選別・要約とトークン集計
+  modelspec.py        モデルごとの方言（思考モードの指定フィールド）の吸収
   models.py           Article / Curation のスキーマ。Curation は structured output の定義でもある
   store.py            既読管理（SQLite）
   discord.py          Discord Webhook への配信と dry-run 表示
