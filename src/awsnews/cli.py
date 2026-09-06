@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import discord
+from . import dashboard, discord
 from .collect import collect, since_datetime
 from .config import AgentConfig, load_agents
 from .curator import Curator
@@ -43,7 +45,8 @@ def _gather(config: AgentConfig, store: SeenStore, limit: int) -> list[Article]:
 
 
 def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
-              webhook_url: str | None, limit: int, record: bool) -> list[CuratedArticle]:
+              webhook_url: str | None, limit: int, record: bool,
+              sink: list[CuratedArticle] | None = None) -> list[CuratedArticle]:
     logger.info("=== %s %s ===", config.emoji, config.name)
     articles = _gather(config, store, limit)
     if not articles:
@@ -53,6 +56,8 @@ def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
     logger.info("[%s] %d 件を評価する", config.key, len(articles))
     curator = Curator(config)
     curated = curator.curate(articles)
+    if sink is not None:
+        sink.extend(curated)   # 閾値未満で見送った分もダッシュボードには残す
     to_notify = [c for c in curated if c.curation.score >= config.min_score]
 
     if dry_run:
@@ -104,6 +109,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--temperature", type=float, help="temperature を上書きする")
     parser.add_argument("--min-score", type=int, dest="min_score",
                         help="通知の閾値を上書きする")
+    parser.add_argument("--export", type=Path, metavar="PATH",
+                        help="選別結果を JSON に書き出す（ダッシュボード生成用）")
+    parser.add_argument("--days", type=int, dest="backfill_days",
+                        help="遡る日数を上書きする（週次まとめなら 7）")
+    parser.add_argument("--dashboard", type=Path, metavar="PATH",
+                        help="共有用ダッシュボードの HTML を書き出す")
+    parser.add_argument("--for-artifact", action="store_true",
+                        help="--dashboard の出力から DOCTYPE / html / head / body を省く")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -129,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             ("reasoning_effort", args.reasoning),
             ("temperature", args.temperature),
             ("min_score", args.min_score),
+            ("backfill_days", args.backfill_days),
         ) if v is not None
     }
     if overrides:
@@ -140,14 +154,63 @@ def main(argv: list[str] | None = None) -> int:
         args.dry_run = True
 
     total = 0
+    collected: list[CuratedArticle] = []
     for config in agents:
         limit = args.limit or config.max_articles_per_run
         total += len(run_agent(config, store, dry_run=args.dry_run,
                                webhook_url=webhook_url, limit=limit,
-                               record=not args.no_store))
+                               record=not args.no_store, sink=collected))
+
+    if args.export or args.dashboard:
+        export_path = args.export or (args.dashboard.with_suffix(".json"))
+        _export(export_path, agents, collected)
+        logger.info("%s に %d 件を書き出した", export_path, len(collected))
+        if args.dashboard:
+            dashboard.build(export_path, args.dashboard,
+                            for_artifact=args.for_artifact)
+            logger.info("%s にダッシュボードを生成した", args.dashboard)
 
     logger.info("完了。通知 %d 件。", total)
     return 0
+
+
+def _export(path: Path, agents: list[AgentConfig], items: list[CuratedArticle]) -> None:
+    """ダッシュボード生成に必要なものだけを JSON にまとめる。
+
+    閾値未満で見送った記事も残す。ダッシュボード側で
+    「なぜ載っていないか」を示せるようにするため。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "agents": [
+            {
+                "key": a.key, "name": a.name, "emoji": a.emoji,
+                "color": f"#{a.color:06x}", "model_id": a.model_id,
+                "min_score": a.min_score,
+            }
+            for a in agents
+        ],
+        "articles": [
+            {
+                "agent_key": i.agent_key,
+                "url": i.article.url,
+                "title_original": i.article.title,
+                "source_label": i.article.source_label,
+                "published_at": (
+                    i.article.published_at.isoformat() if i.article.published_at else None
+                ),
+                "title_ja": i.curation.title_ja,
+                "summary": i.curation.summary,
+                "impact": i.curation.impact,
+                "score": i.curation.score,
+                "reason": i.curation.reason,
+                "tags": i.curation.tags,
+            }
+            for i in sorted(items, key=lambda x: x.curation.score, reverse=True)
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

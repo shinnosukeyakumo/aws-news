@@ -50,10 +50,42 @@ uv run awsnews
 uv run awsnews --stats
 ```
 
-定期実行は当面 cron で足りる。
+### 共有用ダッシュボードを作る
+
+社内勉強会で画面を見ながら話すことを想定したまとめページを生成する。
+Discord への投稿とは独立していて、こちらだけでも使える。
+
+```bash
+# 直近 7 日を集めてダッシュボードを生成する（Discord には投げない）
+uv run awsnews --dry-run --no-store --days 7 --limit 18 \
+  --dashboard data/dashboard.html
+
+# Artifact に載せる場合は DOCTYPE / head / body を省いた形で出す
+uv run awsnews --dry-run --no-store --days 7 --limit 18 \
+  --dashboard data/dashboard.artifact.html --for-artifact
+```
+
+`--dashboard` を付けると同じ場所に `.json` も残る。HTML だけ作り直したいときは
+JSON から再生成できるので、記事の採点をやり直す必要はない。
+
+```python
+from pathlib import Path
+from awsnews import dashboard
+dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
+```
+
+ページの構成は、担当領域ごとの節を上から読める並びにしてある。
+各記事は左にスコア、右に見出し・要約・「効き目」。閾値未満で見送った記事も
+節の末尾に畳んであり、「なぜ載っていないか」を採点の理由から追える。
+
+### 定期実行
+
+当面は cron で足りる。
 
 ```cron
 0 9,18 * * * cd /path/to/aws-news && /path/to/uv run awsnews >> data/run.log 2>&1
+# 週次まとめ（月曜朝）
+0 8 * * 1 cd /path/to/aws-news && /path/to/uv run awsnews --days 7 --limit 18 --dashboard data/dashboard.html >> data/run.log 2>&1
 ```
 
 ## エージェントを増やす
@@ -234,6 +266,7 @@ src/awsnews/
   models.py           Article / Curation のスキーマ。Curation は structured output の定義でもある
   store.py            既読管理（SQLite）
   discord.py          Discord Webhook への配信と dry-run 表示
+  dashboard.py        共有用ダッシュボード（HTML）の組み立て
   cli.py              収集 → 選別 → 配信のつなぎ
 data/seen.db          既読 DB（gitignore 済み）
 evals/                評価フェーズ用
