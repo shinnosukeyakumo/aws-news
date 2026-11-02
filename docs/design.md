@@ -145,6 +145,16 @@ GSI `by-date`（パーティションキー `feed`、ソートキー `sort_at`�
 - 絞り込んだまま別のタブに移ると、移った先のタブで同じ絞り込みがかかる
 - タグの表記揺れは、`sources.yaml` に置く「正式名と別名の対応表」で採点のあとに機械的に揃える（例: AWS Bedrock → Amazon Bedrock）。表にない新製品も付けられるよう、タグの選択肢は固定しない
 
+#### 見張り
+
+- Bedrock・AgentCore・Strands のように、追い続けたい言葉を `sources.yaml` の `watch` に並べる。タグか題名にその言葉が入った記事を「見張り」の欄に集める
+- **点数とタブは問わない**。種類のタブで分けると Bedrock の記事が 5 つのタブに散らばり（9/6 の 40 件では 18 件が 5 タブに分散）、閾値未満の記事は畳まれて見落とすため
+- 見出し・日付・当たった言葉・種類・点数だけを新しい順に並べる。55 点未満の記事も載せ、点数を薄くする
+- 欄の中で言葉ごとに絞り込める。前回開いたあとに入った記事には「新」を付け、件数も出す（前回の時刻は端末に覚えておく）
+- 置き場所: スマホは「すべて」タブの一番上に 5 件まで（タグで絞り込んでいる間は出さない）。PC は左の柱のタブの下に 8 件まで常に出す。どちらも「残りも見る」で全部開く
+- `watch` の言葉は、のちに通知（Slack / LINE）を送る条件にもそのまま使う。見張りに当たり、かつ必読の記事を通知の対象にする想定
+- 当たり方は正規表現で書く。「Amazon Bedrock AgentCore」が Bedrock にも当たらないよう、Bedrock は `Bedrock(?! AgentCore)` にしている
+
 #### 閾値
 
 - `min_score` は 55 にする（これまでは 80）
@@ -209,7 +219,7 @@ HTML は Lambda 側で完成させてから置く（サーバー側で組み立�
 | `src/awsnews/cli.py` | Discord 関連の引数と処理を外す。`--site PATH` でローカルにサイトを書き出せるようにする |
 | `src/awsnews/dashboard.py` | 残す。勉強会用の週次まとめとして引き続き使える |
 | `src/awsnews/models.py` | `Curation` に記事の種類（`category`）を足す |
-| `config/sources.yaml` | 種類の一覧と判定基準、タグの別名の対応表を足す。`min_score` を 55 にする |
+| `config/sources.yaml` | 種類の一覧と判定基準、タグの別名の対応表（例: Managed Knowledge Base → Amazon Bedrock Knowledge Bases）、見張る言葉（`watch`）を足す。`min_score` を 55 にする |
 | `infra/` | 新規。CDK（Python）のスタック一式 |
 | `Dockerfile` | 新規。Lambda 用のコンテナイメージ |
 | `.env.op` | `DISCORD_WEBHOOK_URL` を削除 |
