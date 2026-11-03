@@ -83,14 +83,21 @@ npx -y aws-cdk@2.1145.0 deploy
 CLI の版を固定しているのは、`aws-cdk-lib` 2.273.0 が読めるクラウドアセンブリの版に合わせるため。
 `aws-cdk-lib` を上げるときは、CLI も合わせて上げる。
 
+イメージの push が `Waiting` のまま進まないときは、回線より先に Mac を疑う。
+2026-11-03 には、Docker Desktop を再起動しても、Docker を通さず crane や aws s3 cp で送っても止まり、
+Mac を再起動したら通った（AWS 向けの TCP 接続が送信キューを積んだまま止まっていた）。
+
 パスワードはコードにも CDK にも書かない。デプロイ後に、出力の `AuthStoreArn` の
 KeyValueStore へキー `basic`（値は `ユーザー名:パスワード` の Base64）を登録する。
 キーが無いあいだは誰も通さない。
 
+KeyValueStore は CloudFront の一部なので、リージョンは `us-east-1` を指定する。
+
 ```bash
 ARN=$(jq -r .AwsNews.AuthStoreArn infra/cdk-outputs.json)
-ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn "$ARN" --query ETag --output text)
-aws cloudfront-keyvaluestore put-key --kvs-arn "$ARN" --key basic \
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --region us-east-1 \
+  --kvs-arn "$ARN" --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --region us-east-1 --kvs-arn "$ARN" --key basic \
   --value "$(printf '%s' 'ユーザー名:パスワード' | base64)" --if-match "$ETAG"
 ```
 
