@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,10 @@ class Article(BaseModel):
             f"{self.summary_raw[:body_chars]}\n"
             "DOCUMENT END"
         )
+
+
+# 記事の種類。サイトのタブになる。定義文は config/sources.yaml の categories にある。
+Category = Literal["impl", "aws", "case", "trend", "model"]
 
 
 class Curation(BaseModel):
@@ -74,6 +79,9 @@ class Curation(BaseModel):
             "そのスコアを付けた理由。日本語 1 文、60 文字以内。"
             "本文が不足していて判断しきれなかった場合はここに書く。"
         ),
+    )
+    category: Category = Field(
+        description="記事の種類。system prompt の Category の定義から最も当てはまる key を 1 つ選ぶ。",
     )
     tags: list[str] = Field(
         default_factory=list,

@@ -1,7 +1,7 @@
 [project]
 name = "aws-news"
 version = "0.1.0"
-description = "AWS / LLM ベンダーのニュースを担当領域別エージェントが選別・要約して Discord に配信する"
+description = "AWS / LLM ベンダーのニュースを担当領域別エージェントが選別・要約し、ニュースサイトにする"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

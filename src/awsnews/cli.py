@@ -1,4 +1,4 @@
-"""エントリポイント。収集 → 選別・要約 → 配信をつなぐ。"""
+"""エントリポイント。収集 → 選別・要約 → 保管 → サイト生成をつなぐ。"""
 
 from __future__ import annotations
 
@@ -6,19 +6,18 @@ import argparse
 import dataclasses
 import json
 import logging
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import dashboard, discord
+from . import console, dashboard, site
 from .collect import collect, since_datetime
-from .config import AgentConfig, load_agents
+from .config import AgentConfig, SiteConfig, load_agents, load_site
 from .curator import Curator
 from .models import Article, CuratedArticle
-from .store import SeenStore
+from .store import SeenStore, to_record
 
 logger = logging.getLogger("awsnews")
 
@@ -44,8 +43,8 @@ def _gather(config: AgentConfig, store: SeenStore, limit: int) -> list[Article]:
     return unseen[:limit]
 
 
-def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
-              webhook_url: str | None, limit: int, record: bool,
+def run_agent(config: AgentConfig, store: SeenStore, site_config: SiteConfig, *,
+              limit: int, record: bool,
               sink: list[CuratedArticle] | None = None) -> list[CuratedArticle]:
     logger.info("=== %s %s ===", config.emoji, config.name)
     articles = _gather(config, store, limit)
@@ -56,21 +55,18 @@ def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
     logger.info("[%s] %d 件を評価する", config.key, len(articles))
     curator = Curator(config)
     curated = curator.curate(articles)
+    for item in curated:
+        item.curation.tags = site_config.normalize_tags(item.curation.tags)
     if sink is not None:
-        sink.extend(curated)   # 閾値未満で見送った分もダッシュボードには残す
-    to_notify = [c for c in curated if c.curation.score >= config.min_score]
-
-    if dry_run:
-        print(discord.render_console(config, curated, config.min_score))
-    elif to_notify:
-        if not webhook_url:
-            raise SystemExit("DISCORD_WEBHOOK_URL が未設定。--dry-run で試すか .env に設定せよ。")
-        discord.post(webhook_url, config, to_notify)
+        sink.extend(curated)   # 閾値未満で見送った分もサイトとダッシュボードには残す
+    to_show = [c for c in curated if c.curation.score >= config.min_score]
+    print(console.render_console(config, curated, config.min_score))
 
     if record:
         for item in curated:
             store.mark(config.key, item.article.url, item.article.title,
                        item.curation.score, item.curation.score >= config.min_score)
+            store.save(item)
         # 評価に失敗した記事も記録し、次回に再挑戦させない（無限リトライ防止）
         curated_urls = {c.article.url for c in curated}
         for article in articles:
@@ -79,24 +75,22 @@ def run_agent(config: AgentConfig, store: SeenStore, *, dry_run: bool,
 
     usage = curator.usage
     logger.info(
-        "[%s] 評価 %d 件 / 通知 %d 件 / トークン in=%d out=%d (%s)",
-        config.key, len(curated), len(to_notify),
+        "[%s] 評価 %d 件 / 掲載 %d 件 / トークン in=%d out=%d (%s)",
+        config.key, len(curated), len(to_show),
         usage.input_tokens, usage.output_tokens, config.model_id,
     )
-    return to_notify
+    return to_show
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="awsnews",
-        description="AWS / LLM ベンダーのニュースをエージェントが選別・要約して Discord に配信する",
+        description="AWS / LLM ベンダーのニュースをエージェントが選別・要約し、ニュースサイトを作る",
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="エージェント定義 YAML")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="既読管理 DB")
     parser.add_argument("--agent", action="append", dest="agents",
                         help="対象エージェントの key（複数指定可。既定は全部）")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Discord に投げず標準出力に表示する")
     parser.add_argument("--limit", type=int, default=None,
                         help="1 エージェントあたりの評価件数の上限（既定は設定ファイルの値）")
     parser.add_argument("--no-store", action="store_true",
@@ -108,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="思考モードを上書きする")
     parser.add_argument("--temperature", type=float, help="temperature を上書きする")
     parser.add_argument("--min-score", type=int, dest="min_score",
-                        help="通知の閾値を上書きする")
+                        help="掲載の閾値を上書きする")
     parser.add_argument("--export", type=Path, metavar="PATH",
                         help="選別結果を JSON に書き出す（ダッシュボード生成用）")
     parser.add_argument("--days", type=int, dest="backfill_days",
@@ -117,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="共有用ダッシュボードの HTML を書き出す")
     parser.add_argument("--for-artifact", action="store_true",
                         help="--dashboard の出力から DOCTYPE / html / head / body を省く")
+    parser.add_argument("--site", type=Path, metavar="PATH",
+                        help="保管した直近の記事からニュースサイトの HTML を書き出す")
+    parser.add_argument("--site-only", action="store_true",
+                        help="収集と採点をせず、保管済みの記事だけで --site を作り直す")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -130,9 +128,16 @@ def main(argv: list[str] | None = None) -> int:
 
     store = SeenStore(args.db)
     if args.stats:
-        print(f"{'エージェント':<16}{'処理済み':>8}{'通知済み':>8}")
+        print(f"{'エージェント':<16}{'処理済み':>8}{'掲載':>8}")
         for key, total, notified in store.stats():
             print(f"{key:<16}{total:>8}{notified or 0:>8}")
+        return 0
+
+    site_config = load_site(args.config)
+    if args.site_only:
+        if not args.site:
+            raise SystemExit("--site-only には --site PATH が要る")
+        _build_site(args.site, site_config, store, [])
         return 0
 
     agents = load_agents(args.config, only=args.agents)
@@ -148,17 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     if overrides:
         agents = [dataclasses.replace(a, **overrides) for a in agents]
         logger.info("設定を上書き: %s", overrides)
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not args.dry_run and not webhook_url:
-        logger.warning("DISCORD_WEBHOOK_URL が未設定。--dry-run 相当で動かす。")
-        args.dry_run = True
 
     total = 0
     collected: list[CuratedArticle] = []
     for config in agents:
         limit = args.limit or config.max_articles_per_run
-        total += len(run_agent(config, store, dry_run=args.dry_run,
-                               webhook_url=webhook_url, limit=limit,
+        total += len(run_agent(config, store, site_config, limit=limit,
                                record=not args.no_store, sink=collected))
 
     if args.export or args.dashboard:
@@ -170,8 +170,25 @@ def main(argv: list[str] | None = None) -> int:
                             for_artifact=args.for_artifact)
             logger.info("%s にダッシュボードを生成した", args.dashboard)
 
-    logger.info("完了。通知 %d 件。", total)
+    if args.site:
+        _build_site(args.site, site_config, store, collected)
+
+    logger.info("完了。掲載 %d 件。", total)
     return 0
+
+
+def _build_site(path: Path, site_config: SiteConfig, store: SeenStore,
+                extra: list[CuratedArticle]) -> None:
+    """保管済みの直近の記事に今回の分を重ねてサイトを書き出す。
+
+    --no-store で試したときも、今回採点した記事が画面に出るようにするため。
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=site_config.days)
+    merged = {(r["agent_key"], r["url"]): r for r in store.recent(since)}
+    for item in extra:
+        merged[(item.agent_key, item.article.url)] = to_record(item)
+    site.build(list(merged.values()), site_config, path)
+    logger.info("%s にサイトを書き出した（%d 件）", path, len(merged))
 
 
 def _export(path: Path, agents: list[AgentConfig], items: list[CuratedArticle]) -> None:
@@ -206,6 +223,7 @@ def _export(path: Path, agents: list[AgentConfig], items: list[CuratedArticle]) 
                 "score": i.curation.score,
                 "reason": i.curation.reason,
                 "tags": i.curation.tags,
+                "category": i.curation.category,
             }
             for i in sorted(items, key=lambda x: x.curation.score, reverse=True)
         ],

@@ -39,6 +39,9 @@ class AgentConfig:
     # "off" / "low" / "medium" / "high"。モデルごとの方言は modelspec.py が吸収する。
     reasoning_effort: str
     temperature: float
+    # 全担当共通の重要度の段階と、記事の種類の定義。system prompt に入る。
+    tiers: str = ""
+    categories: tuple[tuple[str, str], ...] = ()
 
     @property
     def system_prompt(self) -> str:
@@ -50,7 +53,11 @@ class AgentConfig:
         """
         return (
             f"# Core Mandates\n{self.charter.strip()}\n\n"
-            f"# Scoring Criteria\n{self.scoring.strip()}\n\n"
+            f"# Scoring Criteria\n{self.tiers.strip()}\n\n{self.scoring.strip()}\n\n"
+            "# Category\n"
+            "category には次のうち最も当てはまる key を 1 つ選べ。\n"
+            + "".join(f"  {k}: {v}\n" for k, v in self.categories)
+            + "\n"
             "# Output Formatting\n"
             "MUST: 日本語で書く。常体（である調）で簡潔に書く。\n"
             "MUST: 字数の上限を守る。title_ja は 40 文字、summary は 120 文字、"
@@ -79,6 +86,45 @@ class AgentConfig:
         )
 
 
+@dataclass(frozen=True)
+class WatchConfig:
+    name: str
+    pattern: str
+
+
+@dataclass(frozen=True)
+class SiteConfig:
+    """ニュースサイトの表示に関わる設定。採点には効かない。"""
+
+    title: str
+    days: int
+    min_score: int
+    watch: tuple[WatchConfig, ...]
+    # 別名 → 正式名
+    tag_aliases: dict[str, str] = field(default_factory=dict)
+
+    def normalize_tags(self, tags: list[str]) -> list[str]:
+        """別名を正式名に揃え、重複を落とす。表にないタグはそのまま残す。"""
+        folded = {k.casefold(): v for k, v in self.tag_aliases.items()}
+        return list(dict.fromkeys(folded.get(t.strip().casefold(), t.strip()) for t in tags))
+
+
+def load_site(path: Path) -> SiteConfig:
+    raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    site = raw.get("site", {})
+    aliases: dict[str, str] = {}
+    for canonical, others in (site.get("tag_aliases") or {}).items():
+        for alias in [canonical, *(others or [])]:   # 正式名の大文字小文字違いも揃える
+            aliases[alias] = canonical
+    return SiteConfig(
+        title=site.get("title", "aws-news"),
+        days=int(site.get("days", 30)),
+        min_score=int(raw.get("defaults", {}).get("min_score", 55)),
+        watch=tuple(WatchConfig(w["name"], w["pattern"]) for w in site.get("watch", [])),
+        tag_aliases=aliases,
+    )
+
+
 def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
     """YAML を読んで AgentConfig の一覧を返す。
 
@@ -88,6 +134,8 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
     """
     raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     defaults = raw.get("defaults", {})
+    categories = tuple((str(k), str(v)) for k, v in (raw.get("categories") or {}).items())
+    _check_categories(categories)
 
     agents: list[AgentConfig] = []
     for entry in raw.get("agents", []):
@@ -127,6 +175,8 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
                 temperature=float(
                     entry.get("temperature", defaults.get("temperature", 0.3))
                 ),
+                tiers=str(raw.get("tiers", "")),
+                categories=categories,
             )
         )
 
@@ -135,3 +185,18 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
         if missing:
             raise SystemExit(f"設定に存在しないエージェント: {', '.join(sorted(missing))}")
     return agents
+
+
+def _check_categories(categories: tuple[tuple[str, str], ...]) -> None:
+    """YAML の種類とモデルの型がずれていたら起動時に止める。"""
+    from typing import get_args
+
+    from .models import Category
+
+    expected = set(get_args(Category))
+    got = {k for k, _ in categories}
+    if got != expected:
+        raise SystemExit(
+            f"sources.yaml の categories が models.Category と一致しない: "
+            f"YAML={sorted(got)} / 型={sorted(expected)}"
+        )

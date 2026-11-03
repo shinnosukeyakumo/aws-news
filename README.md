@@ -1,15 +1,19 @@
 # aws-news
 
-AWS と LLM ベンダーのニュースを、担当領域ごとのエージェントが選別・要約して Discord に配信する。
+AWS と LLM ベンダーのニュースを、担当領域ごとのエージェントが選別・要約し、
+スマホと PC で読めるニュースサイト（1 枚の HTML）にする。
 
-RSS をそのまま転送するのではなく、各エージェントが自分の担当領域の基準で
-「読者にとって重要か」を 0〜100 点で判定し、閾値を超えたものだけに
-日本語の見出し・要約・「効き目」を付けて配信する。
+RSS をそのまま並べるのではなく、各エージェントが自分の担当領域の基準で
+「読者にとって重要か」を 0〜100 点で判定し、日本語の見出し・要約・「効き目」と
+記事の種類（実装・設計 / AWS 新機能 / 事例 / 動向 / 新モデル・製品）を付ける。
 
 ```
-情報源(RSS/sitemap) ─→ 収集 ─→ 既読を除外 ─→ エージェントが選別・要約 ─→ 閾値超えだけ Discord
+情報源(RSS/sitemap) ─→ 収集 ─→ 既読を除外 ─→ エージェントが選別・要約 ─→ 保管 ─→ サイトを生成
                                                     (Bedrock / Strands Agents)
 ```
+
+AWS 上での定期実行と配信（Lambda + DynamoDB + S3 + CloudFront）の設計は `docs/design.md` にある。
+現時点で動くのはローカル実行まで。
 
 ## エージェント構成
 
@@ -26,10 +30,6 @@ RSS をそのまま転送するのではなく、各エージェントが自分�
 
 ```bash
 uv sync
-
-# Discord Webhook URL を設定（1Password 運用）
-op inject -i .env.op -o .env
-# もしくは直接 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 ```
 
 AWS の認証は通常のプロファイル解決に従う（`aws sts get-caller-identity` が通ればよい）。
@@ -37,31 +37,43 @@ AWS の認証は通常のプロファイル解決に従う（`aws sts get-caller
 ## 使い方
 
 ```bash
-# Discord に投げず、選別結果を標準出力で確認する（既読も記録しない）
-uv run awsnews --dry-run --no-store
+# 集めて採点し、既読と記事を保管してサイトを書き出す
+uv run awsnews --site data/site.html
+
+# 保管せずに試す（同じ記事で繰り返し採点したいとき）
+uv run awsnews --no-store --days 7 --site data/site.html
 
 # 特定のエージェントだけ、件数を絞って試す
-uv run awsnews --agent llm-vendors --limit 3 --dry-run --no-store
+uv run awsnews --agent llm-vendors --limit 3 --no-store
 
-# 本番実行（閾値を超えたものを Discord へ投稿し、既読を記録する）
-uv run awsnews
+# 採点し直さず、保管済みの記事だけでサイトを作り直す（画面の調整用）
+uv run awsnews --site-only --site data/site.html
 
 # 既読 DB の統計
 uv run awsnews --stats
 ```
 
+採点結果は毎回標準出力にも出る。`--site-only` は保管済みの記事しか使わないため、
+`--no-store` で試した分は載らない。
+
+### サイトの作り
+
+- 上のタブで記事の種類を切り替え、タグで絞り込む（複数選ぶと AND）
+- 「見張り」の欄は、`site.watch` の言葉（AgentCore・Bedrock・Strands）に当たった記事を、
+  点数とタブを問わず見出しで並べる
+- `min_score`（55）に満たない記事は一番下に畳む
+- 重要度は 5 段階（必読 90 / 要注目 80 / 実装向け 55 / 限定的 30 / 参考）。段階の定義は `tiers`
+- 直近 `site.days`（30）日の記事を載せる
+
 ### 共有用ダッシュボードを作る
 
-社内勉強会で画面を見ながら話すことを想定したまとめページを生成する。
-Discord への投稿とは独立していて、こちらだけでも使える。
+社内勉強会で画面を見ながら話すことを想定した週次まとめページ。サイトとは別物。
 
 ```bash
-# 直近 7 日を集めてダッシュボードを生成する（Discord には投げない）
-uv run awsnews --dry-run --no-store --days 7 --limit 18 \
-  --dashboard data/dashboard.html
+uv run awsnews --no-store --days 7 --limit 18 --dashboard data/dashboard.html
 
 # Artifact に載せる場合は DOCTYPE / head / body を省いた形で出す
-uv run awsnews --dry-run --no-store --days 7 --limit 18 \
+uv run awsnews --no-store --days 7 --limit 18 \
   --dashboard data/dashboard.artifact.html --for-artifact
 ```
 
@@ -74,16 +86,12 @@ from awsnews import dashboard
 dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
 ```
 
-ページの構成は、担当領域ごとの節を上から読める並びにしてある。
-各記事は左にスコア、右に見出し・要約・「効き目」。閾値未満で見送った記事も
-節の末尾に畳んであり、「なぜ載っていないか」を採点の理由から追える。
-
 ### 定期実行
 
 当面は cron で足りる。
 
 ```cron
-0 9,18 * * * cd /path/to/aws-news && /path/to/uv run awsnews >> data/run.log 2>&1
+0 9,18 * * * cd /path/to/aws-news && /path/to/uv run awsnews --site data/site.html >> data/run.log 2>&1
 # 週次まとめ（月曜朝）
 0 8 * * 1 cd /path/to/aws-news && /path/to/uv run awsnews --days 7 --limit 18 --dashboard data/dashboard.html >> data/run.log 2>&1
 ```
@@ -124,13 +132,13 @@ dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
 | `temperature` | 0.3 | Nova は 0 にすると同じ文を繰り返す癖があるため 0 にしない |
 | `backfill_days` | 3 | この日数より古い記事は対象外 |
 | `max_articles_per_run` | 12 | 1 エージェントが 1 回で評価する上限 |
-| `min_score` | 80 | この点数未満は Discord に流さない |
+| `min_score` | 55 | この点数未満はサイトで畳む |
 
 `defaults` の値はエージェント単位で上書きできる。
 モデル比較のときは実行時にも上書きできる。
 
 ```bash
-uv run awsnews --agent llm-vendors --limit 6 --dry-run --no-store --min-score 0 \
+uv run awsnews --agent llm-vendors --limit 6 --no-store --min-score 0 \
   --model us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
@@ -158,8 +166,8 @@ uv run awsnews --agent llm-vendors --limit 6 --dry-run --no-store --min-score 0 
 - **Haiku 4.5 は Nova より判別が効く。** 事例紹介を閾値以下に落とせる。
 - **Sonnet 4.6 が最も基準に忠実。** ただし他モデルより高コスト。
 
-**閾値はモデルとセットで調整すること。** `min_score` の 80 は Nova 前提の値であり、
-Haiku / Sonnet に切り替えるなら 55 前後に戻す。
+**閾値はモデルとセットで調整すること。** 当初は Nova 前提で 80 にしていたが、
+80 以上が「発表」の帯だったため実装の解説記事が全部落ちた。種類をタブで分けた今は 55 にしている。
 
 ### 追試: 評価基準の書き方でモデル差は縮む
 
@@ -264,10 +272,11 @@ src/awsnews/
   curator.py          Strands Agent による選別・要約とトークン集計
   modelspec.py        モデルごとの方言（思考モードの指定フィールド）の吸収
   models.py           Article / Curation のスキーマ。Curation は structured output の定義でもある
-  store.py            既読管理（SQLite）
-  discord.py          Discord Webhook への配信と dry-run 表示
+  store.py            既読管理とサイト用の記事の保管（SQLite）
+  site.py             ニュースサイト（1 枚の HTML）の組み立て
+  console.py          採点結果の標準出力表示
   dashboard.py        共有用ダッシュボード（HTML）の組み立て
-  cli.py              収集 → 選別 → 配信のつなぎ
-data/seen.db          既読 DB（gitignore 済み）
+  cli.py              収集 → 選別 → 保管 → サイト生成のつなぎ
+data/seen.db          既読と記事の DB（gitignore 済み）
 evals/                評価フェーズ用
 ```
