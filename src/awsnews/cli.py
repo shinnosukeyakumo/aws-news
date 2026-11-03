@@ -17,7 +17,7 @@ from .collect import collect, since_datetime
 from .config import AgentConfig, SiteConfig, load_agents, load_site
 from .curator import Curator
 from .models import Article, CuratedArticle
-from .store import SeenStore, to_record
+from .store import SeenStore, Store, to_record
 
 logger = logging.getLogger("awsnews")
 
@@ -26,7 +26,7 @@ DEFAULT_CONFIG = ROOT / "config" / "sources.yaml"
 DEFAULT_DB = ROOT / "data" / "seen.db"
 
 
-def _gather(config: AgentConfig, store: SeenStore, limit: int) -> list[Article]:
+def _gather(config: AgentConfig, store: Store, limit: int) -> list[Article]:
     """情報源をまたいで記事を集め、未処理のものを新しい順に返す。"""
     collected: dict[str, Article] = {}
     since = since_datetime(config.backfill_days)
@@ -43,7 +43,7 @@ def _gather(config: AgentConfig, store: SeenStore, limit: int) -> list[Article]:
     return unseen[:limit]
 
 
-def run_agent(config: AgentConfig, store: SeenStore, site_config: SiteConfig, *,
+def run_agent(config: AgentConfig, store: Store, site_config: SiteConfig, *,
               limit: int, record: bool,
               sink: list[CuratedArticle] | None = None) -> list[CuratedArticle]:
     logger.info("=== %s %s ===", config.emoji, config.name)
@@ -177,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _build_site(path: Path, site_config: SiteConfig, store: SeenStore,
+def _build_site(path: Path, site_config: SiteConfig, store: Store,
                 extra: list[CuratedArticle]) -> None:
     """保管済みの直近の記事に今回の分を重ねてサイトを書き出す。
 

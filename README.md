@@ -12,8 +12,8 @@ RSS をそのまま並べるのではなく、各エージェントが自分の�
                                                     (Bedrock / Strands Agents)
 ```
 
-AWS 上での定期実行と配信（Lambda + DynamoDB + S3 + CloudFront）の設計は `docs/design.md` にある。
-現時点で動くのはローカル実行まで。
+AWS 上では東京リージョン（ap-northeast-1）で 1 日 2 回（9:00 / 18:00 JST）動き、
+CloudFront の Basic 認証の内側でサイトを配信する。設計は `docs/design.md`、CDK は `infra/` にある。
 
 ## エージェント構成
 
@@ -64,6 +64,41 @@ uv run awsnews --stats
 - `min_score`（55）に満たない記事は一番下に畳む
 - 重要度は 5 段階（必読 90 / 要注目 80 / 実装向け 55 / 限定的 30 / 参考）。段階の定義は `tiers`
 - 直近 `site.days`（30）日の記事を載せる
+
+### AWS に載せる
+
+```
+EventBridge Scheduler（9:00 / 18:00 JST）→ Lambda（コンテナ, arm64）→ DynamoDB / Bedrock（jp. Nova 2 Lite）
+                                                      └→ S3 ←OAC─ CloudFront（CloudFront Functions で Basic 認証）
+```
+
+Docker が要る。CDK は `infra/` の中で動かす。
+
+```bash
+cd infra
+uv sync
+npx -y aws-cdk@2.1145.0 deploy
+```
+
+CLI の版を固定しているのは、`aws-cdk-lib` 2.273.0 が読めるクラウドアセンブリの版に合わせるため。
+`aws-cdk-lib` を上げるときは、CLI も合わせて上げる。
+
+パスワードはコードにも CDK にも書かない。デプロイ後に、出力の `AuthStoreArn` の
+KeyValueStore へキー `basic`（値は `ユーザー名:パスワード` の Base64）を登録する。
+キーが無いあいだは誰も通さない。
+
+```bash
+ARN=$(jq -r .AwsNews.AuthStoreArn infra/cdk-outputs.json)
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn "$ARN" --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn "$ARN" --key basic \
+  --value "$(printf '%s' 'ユーザー名:パスワード' | base64)" --if-match "$ETAG"
+```
+
+手動で 1 回動かすときは、出力の `FunctionName` を呼ぶ。
+
+```bash
+aws lambda invoke --region ap-northeast-1 --function-name <FunctionName> /dev/stdout
+```
 
 ### 共有用ダッシュボードを作る
 
@@ -277,6 +312,10 @@ src/awsnews/
   console.py          採点結果の標準出力表示
   dashboard.py        共有用ダッシュボード（HTML）の組み立て
   cli.py              収集 → 選別 → 保管 → サイト生成のつなぎ
+  handler.py          Lambda の入口（DynamoDB 版の台帳を使い、S3 に置く）
+  publish.py          サイトを S3 に置く
+infra/                CDK（Python）。Lambda / DynamoDB / S3 / CloudFront / Scheduler
+Dockerfile            Lambda 用のコンテナイメージ
 data/seen.db          既読と記事の DB（gitignore 済み）
 evals/                評価フェーズ用
 ```

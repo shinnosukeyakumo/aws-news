@@ -1,4 +1,8 @@
-"""既読管理と、サイトに載せる記事の保管。"""
+"""既読管理と、サイトに載せる記事の保管。
+
+ローカルでは SQLite（SeenStore）、Lambda では DynamoDB（DynamoStore）を使う。
+どちらも Store の形に合わせてあり、cli.py と handler.py は差を意識しない。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 from .models import CuratedArticle
 
@@ -32,8 +37,17 @@ CREATE INDEX IF NOT EXISTS idx_articles_sort ON articles (sort_at);
 """
 
 
+class Store(Protocol):
+    def filter_unseen(self, agent_key: str, urls: list[str]) -> set[str]: ...
+    def mark(self, agent_key: str, url: str, title: str, score: int | None,
+             notified: bool) -> None: ...
+    def save(self, item: CuratedArticle) -> None: ...
+    def recent(self, since: datetime) -> list[dict]: ...
+    def stats(self) -> list[tuple[str, int, int]]: ...
+
+
 class SeenStore:
-    """URL × エージェントの単位で処理済みを記録する。
+    """URL × エージェントの単位で処理済みを記録する（SQLite 版）。
 
     同じ URL でも担当エージェントが違えば別扱いにする（将来 1 記事を
     複数エージェントが違う観点で扱う余地を残すため）。
@@ -101,6 +115,74 @@ class SeenStore:
                 (since.astimezone(timezone.utc).isoformat(),),
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+
+class DynamoStore:
+    """DynamoDB 版。1 記事 1 項目で、既読の記録と採点結果を同じ項目に持つ。
+
+    キーは pk=エージェント、sk=URL。サイトに載せる項目にだけ feed="all" を付け、
+    GSI by-date（feed, sort_at）で新しい順に引く。採点に失敗した記事は
+    feed を持たないので GSI に入らない（疎なインデックス）。
+    採点結果は JSON 文字列 body に入れる。数値が Decimal で返る扱いを避けるため。
+    """
+
+    _BATCH = 100   # BatchGetItem の上限
+
+    def __init__(self, table_name: str, region: str | None = None):
+        import boto3   # ローカルの SQLite 運用では読み込まない
+
+        self._table = boto3.resource("dynamodb", region_name=region).Table(table_name)
+        self._client = self._table.meta.client
+
+    def filter_unseen(self, agent_key: str, urls: list[str]) -> set[str]:
+        found: set[str] = set()
+        for i in range(0, len(urls), self._BATCH):
+            keys = [{"pk": agent_key, "sk": u} for u in urls[i : i + self._BATCH]]
+            request = {self._table.name: {"Keys": keys, "ProjectionExpression": "sk"}}
+            while request:
+                resp = self._client.batch_get_item(RequestItems=request)
+                found |= {r["sk"] for r in resp["Responses"].get(self._table.name, [])}
+                request = resp.get("UnprocessedKeys") or None
+        return set(urls) - found
+
+    def mark(self, agent_key: str, url: str, title: str, score: int | None,
+             notified: bool) -> None:
+        # 採点できた記事は直後の save() が中身ごと上書きする。ここで書くのは失敗の記録だけ
+        if score is not None:
+            return
+        self._table.put_item(Item={
+            "pk": agent_key, "sk": url, "title_original": title, "status": "failed",
+            "seen_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def save(self, item: CuratedArticle) -> None:
+        record = to_record(item)
+        self._table.put_item(Item={
+            "pk": item.agent_key, "sk": item.article.url, "status": "curated",
+            "feed": "all", "sort_at": record["sort_at"], "score": record["score"],
+            "body": json.dumps(record, ensure_ascii=False),
+            "seen_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def recent(self, since: datetime) -> list[dict]:
+        from boto3.dynamodb.conditions import Key
+
+        out: list[dict] = []
+        kwargs = {
+            "IndexName": "by-date",
+            "KeyConditionExpression": Key("feed").eq("all")
+            & Key("sort_at").gte(since.astimezone(timezone.utc).isoformat()),
+            "ScanIndexForward": False,
+        }
+        while True:
+            resp = self._table.query(**kwargs)
+            out += [json.loads(i["body"]) for i in resp["Items"]]
+            if "LastEvaluatedKey" not in resp:
+                return out
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    def stats(self) -> list[tuple[str, int, int]]:
+        raise NotImplementedError("DynamoDB 版では --stats を用意していない")
 
 
 def to_record(item: CuratedArticle) -> dict:

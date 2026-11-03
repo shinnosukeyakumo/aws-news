@@ -1,0 +1,7 @@
+.venv
+data
+infra
+docs
+.git
+.omni
+**/__pycache__
