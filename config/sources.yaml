@@ -6,8 +6,9 @@ defaults:
   # Bedrock のクロスリージョン推論プロファイル。
   # 迷ったらデータレジデンシー要件で選ぶ（jp. = 日本国内固定 / us. = 米国内 / global. = 全世界）
   # Nova 2 Lite は extended thinking 対応・1M context。Nova Premier / Pro(v1) は Legacy。
-  model_id: us.amazon.nova-2-lite-v1:0
-  region: us-west-2
+  # 2026-11-03 に東京へ移した。jp. は東京と大阪だけで処理される。
+  model_id: jp.amazon.nova-2-lite-v1:0
+  region: ap-northeast-1
   # 思考モード: off / low / medium / high。モデル別の方言は modelspec.py が吸収する。
   reasoning_effort: "off"
   # Nova は temperature=0 で同じ文を繰り返す既知の癖があるため 0 にはしない。

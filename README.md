@@ -126,8 +126,8 @@ dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
 
 | キー | 既定値 | 意味 |
 |---|---|---|
-| `model_id` | `us.amazon.nova-2-lite-v1:0` | Bedrock の推論プロファイル |
-| `region` | `us-west-2` | Bedrock のリージョン |
+| `model_id` | `jp.amazon.nova-2-lite-v1:0` | Bedrock の推論プロファイル（東京・大阪で処理） |
+| `region` | `ap-northeast-1` | Bedrock のリージョン |
 | `reasoning_effort` | `off` | 思考モード。`off` / `low` / `medium` / `high` |
 | `temperature` | 0.3 | Nova は 0 にすると同じ文を繰り返す癖があるため 0 にしない |
 | `backfill_days` | 3 | この日数より古い記事は対象外 |

@@ -228,7 +228,7 @@ CDK を Python にするのは、アプリ本体と言語を揃えるため。
 
 ## AWS リソース
 
-デプロイ先は `default` プロファイルのアカウント、リージョンは `us-west-2`（現在 Bedrock を呼んでいる場所と同じ）。
+デプロイ先は `default` プロファイルのアカウント、リージョンは `ap-northeast-1`（東京）。Bedrock も `jp.amazon.nova-2-lite-v1:0`（東京・大阪で処理）で東京から呼ぶ。2026-11-03 に東京から `converse` が通ることを確認した。CloudFront と CloudFront Functions はリージョンを持たない。
 
 | リソース | 主な設定 |
 |---|---|
