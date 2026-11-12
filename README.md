@@ -87,6 +87,11 @@ CLI の版を固定しているのは、`aws-cdk-lib` 2.273.0 が読めるクラ
 2026-11-03 には、Docker Desktop を再起動しても、Docker を通さず crane や aws s3 cp で送っても止まり、
 Mac を再起動したら通った（AWS 向けの TCP 接続が送信キューを積んだまま止まっていた）。
 
+`articles.json` は re:Invent セッションマップ（別リポの Web アプリ）の「ニュース」タブからも読む。
+そのため CloudFront Function は `infra/stack.py` の `CORS_ORIGINS` に入れたオリジンにだけ CORS を返す。
+preflight（OPTIONS）は認証より先に 204 で答え、別オリジンからの 401 には `www-authenticate` を付けない
+（付けるとブラウザの認証ダイアログが出てしまう）。読み込み元を増やすときは `CORS_ORIGINS` に足してデプロイする。
+
 パスワードはコードにも CDK にも書かない。デプロイ後に、出力の `AuthStoreArn` の
 KeyValueStore へキー `basic`（値は `ユーザー名:パスワード` の Base64）を登録する。
 キーが無いあいだは誰も通さない。

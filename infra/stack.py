@@ -5,6 +5,7 @@ EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -36,6 +37,13 @@ PROFILE_REGIONS = {
     "apac": ["ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
              "ap-south-1", "ap-southeast-1", "ap-southeast-2"],
 }
+
+
+# articles.json を読みに来てよい Web アプリ（re:Invent セッションマップのニュースタブ）
+CORS_ORIGINS = [
+    "https://main.d13ddmw6nhifec.amplifyapp.com",
+    "http://localhost:5173",   # npm run dev
+]
 
 
 def _model_ids() -> set[str]:
@@ -77,11 +85,26 @@ class AwsNewsStack(Stack):
         )
 
         auth_store = cloudfront.KeyValueStore(self, "AuthStore")
+        auth_code = (HERE / "basic_auth.js").read_text(encoding="utf-8")
+        auth_code = auth_code.replace("__CORS_ORIGINS__", json.dumps(CORS_ORIGINS))
         auth_fn = cloudfront.Function(
             self, "BasicAuth",
-            code=cloudfront.FunctionCode.from_file(file_path=str(HERE / "basic_auth.js")),
+            code=cloudfront.FunctionCode.from_inline(auth_code),
             runtime=cloudfront.FunctionRuntime.JS_2_0,
             key_value_store=auth_store,
+        )
+        # 認証を通った応答（S3 から返る articles.json など）に CORS のヘッダーを付ける。
+        # preflight と 401 は CloudFront Function が自分で CORS を付けて返す
+        cors_policy = cloudfront.ResponseHeadersPolicy(
+            self, "Cors",
+            cors_behavior=cloudfront.ResponseHeadersCorsBehavior(
+                access_control_allow_origins=CORS_ORIGINS,
+                access_control_allow_headers=["authorization"],
+                access_control_allow_methods=["GET", "HEAD", "OPTIONS"],
+                access_control_allow_credentials=False,
+                access_control_max_age=Duration.days(1),
+                origin_override=True,
+            ),
         )
         distribution = cloudfront.Distribution(
             self, "Distribution",
@@ -89,7 +112,9 @@ class AwsNewsStack(Stack):
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.S3BucketOrigin.with_origin_access_control(bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                response_headers_policy=cors_policy,
                 function_associations=[cloudfront.FunctionAssociation(
                     function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
             ),
