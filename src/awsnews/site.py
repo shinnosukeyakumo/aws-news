@@ -16,12 +16,17 @@ from .config import SiteConfig
 
 
 def render(articles: list[dict], site: SiteConfig, *,
-           generated_at: datetime | None = None) -> str:
-    """記事の一覧（store.to_record の形）からページ全体の HTML を返す。"""
+           generated_at: datetime | None = None, verify: bool = False) -> str:
+    """記事の一覧（store.to_record の形）からページ全体の HTML を返す。
+
+    verify=True のときだけ「検証する」ボタンを出す。受け口の /api/verify は
+    AWS 上のサイトにしか無いので、ローカルで書き出すページには出さない。
+    """
     generated = (generated_at or datetime.now(timezone.utc)).isoformat()
     payload = {
         "generated_at": generated,
         "min_score": site.min_score,
+        "verify_api": verify,
         "watch": [{"name": w.name, "pattern": w.pattern} for w in site.watch],
         "articles": [{**a, "tags": site.normalize_tags(a.get("tags") or [])} for a in articles],
     }
@@ -126,6 +131,13 @@ main .wrap{padding-block:14px 40px;display:flex;flex-direction:column;gap:14px}
 .tags button{border:0;background:none;padding:0;font-size:12px;color:var(--faint);cursor:pointer}
 .tags button::before{content:"#"}
 .tags button[aria-pressed="true"]{color:var(--accent);font-weight:700}
+.foot{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-top:6px}
+.foot .tags{margin-top:0}
+.vbtn,.vstat{flex:none;font-size:12px;font-weight:700;border-radius:999px;padding:3px 10px;white-space:nowrap}
+.vbtn{border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer}
+.vbtn:disabled{opacity:.5;cursor:default}
+.vstat{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.vstat[data-s="needs-real"],.vstat[data-s="failed"]{background:color-mix(in srgb,var(--new) 14%,transparent);color:var(--new)}
 .score{width:58px;height:58px;margin-top:4px;border:1.5px solid var(--c);border-radius:8px;color:var(--c);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;background:color-mix(in srgb,var(--c) 8%,transparent)}
 .score b{font-family:var(--f-head);font-size:23px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
 .score span{font-size:9.5px;font-weight:700;letter-spacing:.08em}
@@ -298,7 +310,20 @@ footer{font-size:12px;color:var(--faint);text-align:center;padding-block:0 28px;
     document.querySelectorAll('.tagbar').forEach(el=>el.innerHTML=tagHtml);
   }
   const kicker=a=>`<p class="kicker"><span class="cat">${AG[a.category].name}</span><span>${esc(a.source_label)}</span></p>`;
-  const tags=a=>`<div class="tags">${(a.tags||[]).slice(0,3).map(t=>`<button data-tag="${esc(t)}" aria-pressed="${curTags.includes(t)}">${esc(t)}</button>`).join('')}</div>`;
+  const tagList=a=>`<div class="tags">${(a.tags||[]).slice(0,3).map(t=>`<button data-tag="${esc(t)}" aria-pressed="${curTags.includes(t)}">${esc(t)}</button>`).join('')}</div>`;
+  // 検証の状態。approved はボタンが書き、その先は agentcore-playground が書く
+  const VS={approved:'承認済み',picked:'検証中',done:'下書きあり','needs-real':'要実機',failed:'検証失敗'};
+  const vbox=a=>!D.verify_api?'':a.verify?`<span class="vstat" data-s="${esc(a.verify)}">${esc(VS[a.verify]||a.verify)}</span>`:`<button class="vbtn" data-verify="${D.articles.indexOf(a)}">検証する</button>`;
+  const tags=a=>`<div class="foot">${tagList(a)}${vbox(a)}</div>`;
+  // CloudFront の OAC 経由で Lambda に POST するときは、本文の SHA-256 をヘッダーで渡す決まり
+  async function sendVerify(a){
+    const body=JSON.stringify({pk:a.agent_key,sk:a.url});
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(body));
+    const hex=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+    const res=await fetch('/api/verify',{method:'POST',headers:{'content-type':'application/json','x-amz-content-sha256':hex},body});
+    if(res.status!==200&&res.status!==409) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()).status;
+  }
   const imp=a=>`<p class="imp"><b>効き目</b>${esc(a.impact)}</p>`;
   function lead(a){
     return `<article class="lead" style="${col(a.category)};--k:var(--k-${cur==='all'?'all':a.category})">
@@ -345,6 +370,15 @@ footer{font-size:12px;color:var(--faint);text-align:center;padding-block:0 28px;
   }
   function renderAll(){renderTabs();renderWatch();renderTagbar();render();}
   document.addEventListener('click',e=>{
+    const v=e.target.closest('[data-verify]');
+    if(v){
+      const a=D.articles[+v.dataset.verify];
+      if(!confirm(`「${a.title_ja}」を検証に回しますか？`)) return;
+      v.disabled=true; v.textContent='送信中';
+      sendVerify(a).then(s=>{a.verify=s; render();})
+        .catch(err=>{v.disabled=false; v.textContent='検証する'; alert(`送れませんでした（${err.message}）`);});
+      return;
+    }
     const tab=e.target.closest('.tab');
     if(tab){ cur=tab.dataset.k; try{localStorage.setItem('awsnews-cat',cur)}catch(err){} renderAll(); window.scrollTo({top:0}); return; }
     const t=e.target.closest('[data-tag]'), c=e.target.closest('[data-clear]');

@@ -1,11 +1,11 @@
 """aws-news のスタック。
 
 EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 ← CloudFront（Basic 認証）
+「検証する」ボタン → CloudFront /api/* → Lambda（Function URL）→ DynamoDB verify-requests
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import yaml
@@ -37,13 +37,6 @@ PROFILE_REGIONS = {
     "apac": ["ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
              "ap-south-1", "ap-southeast-1", "ap-southeast-2"],
 }
-
-
-# articles.json を読みに来てよい Web アプリ（re:Invent セッションマップのニュースタブ）
-CORS_ORIGINS = [
-    "https://main.d13ddmw6nhifec.amplifyapp.com",
-    "http://localhost:5173",   # npm run dev
-]
 
 
 def _model_ids() -> set[str]:
@@ -84,27 +77,57 @@ class AwsNewsStack(Stack):
             auto_delete_objects=True,
         )
 
+        # 「検証する」で承認した記事。agentcore-playground が拾って状態を書き戻す。
+        # 承認の履歴なので、スタックを消しても残す
+        verify_table = dynamodb.Table(
+            self, "VerifyRequests",
+            table_name="aws-news-verify-requests",   # playground 側から名前で引くので固定する
+            partition_key=dynamodb.Attribute(name="id", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+        verify_table.add_global_secondary_index(
+            index_name="by-status",
+            partition_key=dynamodb.Attribute(name="status", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="approved_at", type=dynamodb.AttributeType.STRING),
+        )
+
+        # 受け口は Curator と同じイメージを使い、入口だけ替える。ビルドは 1 回で済む
+        image_code = dict(
+            directory=str(ROOT),
+            platform=ecr_assets.Platform.LINUX_ARM64,
+            exclude=[".venv", "data", "infra", "docs", ".git", ".omni", "**/__pycache__"],
+        )
+        verify_fn = lambda_.DockerImageFunction(
+            self, "VerifyApi",
+            code=lambda_.DockerImageCode.from_image_asset(
+                **image_code, cmd=["awsnews.verify.handler"]),
+            architecture=lambda_.Architecture.ARM_64,
+            memory_size=256,
+            timeout=Duration.seconds(10),
+            environment={"TABLE_NAME": table.table_name,
+                         "VERIFY_TABLE_NAME": verify_table.table_name},
+            log_group=logs.LogGroup(
+                self, "VerifyApiLogs",
+                retention=logs.RetentionDays.ONE_MONTH,
+                removal_policy=RemovalPolicy.DESTROY,
+            ),
+        )
+        verify_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:GetItem"], resources=[table.table_arn]))
+        verify_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:PutItem"], resources=[verify_table.table_arn]))
+        # Function URL は IAM 認証にして、CloudFront（OAC）からしか呼べないようにする
+        verify_url = verify_fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
+
         auth_store = cloudfront.KeyValueStore(self, "AuthStore")
-        auth_code = (HERE / "basic_auth.js").read_text(encoding="utf-8")
-        auth_code = auth_code.replace("__CORS_ORIGINS__", json.dumps(CORS_ORIGINS))
         auth_fn = cloudfront.Function(
             self, "BasicAuth",
-            code=cloudfront.FunctionCode.from_inline(auth_code),
+            code=cloudfront.FunctionCode.from_file(file_path=str(HERE / "basic_auth.js")),
             runtime=cloudfront.FunctionRuntime.JS_2_0,
             key_value_store=auth_store,
-        )
-        # 認証を通った応答（S3 から返る articles.json など）に CORS のヘッダーを付ける。
-        # preflight と 401 は CloudFront Function が自分で CORS を付けて返す
-        cors_policy = cloudfront.ResponseHeadersPolicy(
-            self, "Cors",
-            cors_behavior=cloudfront.ResponseHeadersCorsBehavior(
-                access_control_allow_origins=CORS_ORIGINS,
-                access_control_allow_headers=["authorization"],
-                access_control_allow_methods=["GET", "HEAD", "OPTIONS"],
-                access_control_allow_credentials=False,
-                access_control_max_age=Duration.days(1),
-                origin_override=True,
-            ),
         )
         distribution = cloudfront.Distribution(
             self, "Distribution",
@@ -114,27 +137,36 @@ class AwsNewsStack(Stack):
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
-                response_headers_policy=cors_policy,
                 function_associations=[cloudfront.FunctionAssociation(
                     function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
             ),
+            additional_behaviors={
+                # 「検証する」の POST。サイトと同じ Basic 認証を通してから Lambda に渡す。
+                # Authorization は OAC の署名で上書きされるので、Lambda には届かない
+                "/api/*": cloudfront.BehaviorOptions(
+                    origin=origins.FunctionUrlOrigin.with_origin_access_control(verify_url),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    function_associations=[cloudfront.FunctionAssociation(
+                        function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
+                ),
+            },
             price_class=cloudfront.PriceClass.PRICE_CLASS_200,   # 日本を含む
             http_version=cloudfront.HttpVersion.HTTP2_AND_3,
         )
 
         fn = lambda_.DockerImageFunction(
             self, "Curator",
-            code=lambda_.DockerImageCode.from_image_asset(
-                str(ROOT),
-                platform=ecr_assets.Platform.LINUX_ARM64,
-                exclude=[".venv", "data", "infra", "docs", ".git", ".omni", "**/__pycache__"],
-            ),
+            code=lambda_.DockerImageCode.from_image_asset(**image_code),
             architecture=lambda_.Architecture.ARM_64,
             memory_size=1024,
             timeout=Duration.minutes(15),
             # 自動で再実行すると Bedrock の呼び出しが二重になる。失敗したら次の定期実行に任せる
             retry_attempts=0,
-            environment={"TABLE_NAME": table.table_name, "BUCKET_NAME": bucket.bucket_name},
+            environment={"TABLE_NAME": table.table_name, "BUCKET_NAME": bucket.bucket_name,
+                         "VERIFY_TABLE_NAME": verify_table.table_name},
             log_group=logs.LogGroup(
                 self, "CuratorLogs",
                 retention=logs.RetentionDays.ONE_MONTH,
@@ -148,6 +180,8 @@ class AwsNewsStack(Stack):
             resources=[table.table_arn, f"{table.table_arn}/index/by-date"],
         ))
         bucket.grant_put(fn)
+        fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:Scan"], resources=[verify_table.table_arn]))
         model_arns: list[str] = []
         for model_id in sorted(_model_ids()):
             prefix, _, base = model_id.partition(".")
@@ -169,3 +203,5 @@ class AwsNewsStack(Stack):
         CfnOutput(self, "SiteUrl", value=f"https://{distribution.distribution_domain_name}/")
         CfnOutput(self, "AuthStoreArn", value=auth_store.key_value_store_arn)
         CfnOutput(self, "FunctionName", value=fn.function_name)
+        CfnOutput(self, "VerifyTableName", value=verify_table.table_name)
+        CfnOutput(self, "VerifyStatusIndex", value="by-status")

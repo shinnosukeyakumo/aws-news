@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import publish, site
+from . import publish, site, verify
 from .cli import run_agent
 from .config import load_agents, load_site
 from .store import DynamoStore
@@ -41,7 +41,17 @@ def handler(event, context) -> dict:
     # 採点が一部失敗しても、溜まっている分からサイトは作り直す
     since = datetime.now(timezone.utc) - timedelta(days=site_config.days)
     articles = store.recent(since)
-    publish.put_site(os.environ["BUCKET_NAME"], site.render(articles, site_config), articles)
+    # 「検証する」で承認した記事には、その後の状態をカードに出す
+    try:
+        status_of = verify.statuses(os.environ["VERIFY_TABLE_NAME"])
+    except Exception:  # noqa: BLE001 - 状態が読めなくてもサイトは出す
+        status_of = {}
+        logger.exception("検証の状態を読めなかった")
+    for a in articles:
+        if a["url"] in status_of:
+            a["verify"] = status_of[a["url"]]
+    html_text = site.render(articles, site_config, verify=True)
+    publish.put_site(os.environ["BUCKET_NAME"], html_text, articles)
     logger.info("サイトを更新した。掲載 %d 件（今回）/ 直近 %d 日 %d 件 / 失敗 %d 担当",
                 shown, site_config.days, len(articles), failed)
     return {"shown": shown, "articles": len(articles), "failed_agents": failed}

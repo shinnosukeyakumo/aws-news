@@ -205,6 +205,37 @@ HTML は Lambda 側で完成させてから置く（サーバー側で組み立�
 ブラウザ側で JSON を読んで描画する方式より、スマホでの表示が速く、仕組みも単純になる。
 タブとタグの絞り込みは、ページに埋め込んだ記事データを JavaScript で切り替える。
 
+## 検証の依頼（2026-11-14 追加）
+
+カードの「検証する」で記事を承認し、agentcore-playground が AWS Emulator で検証して Qiita の下書きまで作る。
+playground 側の設計は `~/aws-demo/03-projects/research/agentcore-playground/docs/design-verify-pipeline.md`。
+
+```
+カードの「検証する」 → POST /api/verify {pk, sk}
+  → CloudFront（Basic 認証）→ OAC → Lambda（Function URL、IAM 認証）
+       articles から記事を読み、verify-requests に status=approved で書く（attribute_not_exists(id)）
+agentcore-playground（Mac） → by-status で approved を拾い、picked → done / needs-real / failed と書き戻す
+Curator（定期実行） → verify-requests を Scan し、カードに状態を出す
+```
+
+テーブル `aws-news-verify-requests`（オンデマンド、PITR、スタックを消しても残す）
+
+| 属性 | 中身 |
+|---|---|
+| `id`（パーティションキー） | 記事 URL の SHA-256 先頭 16 桁 |
+| `url` / `title_ja` / `title_original` / `source_label` / `tags` / `summary` | articles から写す |
+| `status` | `approved`（ボタン）→ `picked` → `done` / `needs-real` / `failed`（playground） |
+| `approved_at` / `picked_at` / `done_at` | ISO 8601 |
+| `exp` / `message` | playground が書く |
+
+GSI `by-status`（パーティションキー `status`、ソートキー `approved_at`）。テーブル名と GSI 名は CDK の出力 `VerifyTableName` / `VerifyStatusIndex` にも出す。
+
+- 受け口の Lambda は Curator と同じイメージを使い、入口（CMD）だけ `awsnews.verify.handler` に替える。ビルドは 1 回で済む
+- OAC 経由で Lambda に POST するときは、本文の SHA-256 を `x-amz-content-sha256` ヘッダーで送る決まりがある。ページの JS が計算して付ける
+- ボタンは押す前に確認を出す。押したあとはその場で「承認済み」に変わり、その先の状態はサイトの次の更新で出る
+- ボタンは AWS 上のサイトにだけ出す。ローカルで `--site` を使って書き出すページには出さない
+- 同じ日に、セッションマップ向けに入れていた `articles.json` の CORS を外した
+
 ## コードの変更点
 
 | ファイル | 変更 |
