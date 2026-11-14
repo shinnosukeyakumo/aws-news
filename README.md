@@ -59,7 +59,7 @@ uv run awsnews --stats
 ### サイトの作り
 
 - 上のタブで記事の種類を切り替え、タグで絞り込む（複数選ぶと AND）
-- 「見張り」の欄は、`site.watch` の言葉（AgentCore・Bedrock・Strands）に当たった記事を、
+- 「ウォッチ」の欄は、`site.watch` の言葉（AgentCore・Bedrock・Strands）に当たった記事を、
   点数とタブを問わず見出しで並べる
 - `min_score`（55）に満たない記事は一番下に畳む
 - 重要度は 5 段階（必読 90 / 要注目 80 / 実装向け 55 / 限定的 30 / 参考）。段階の定義は `tiers`
