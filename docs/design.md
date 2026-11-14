@@ -232,8 +232,8 @@ Curator（定期実行） → verify-requests を Scan し、カードに状態�
 | `status` | `approved`（ボタン）→ `picked` → `done` / `needs-real` / `failed`（playground） |
 | `approved_at` / `picked_at` / `done_at` | ISO 8601 |
 | `exp` / `message` | playground が書く |
-| `result` | `PASS` / `FAIL` / `UNSUPPORTED` / `ERROR`。playground が書く（2026-11-14 追加） |
-| `note_md` | 検証の記録（Markdown）。playground が書く（同上） |
+| `result` | `PASS` / `FAIL` / `UNSUPPORTED` / `ERROR`。playground が書く（2026-11-14 追加）。`UNSUPPORTED` は Emulator が 501 を返して確かめられなかったもの |
+| `note_md` | 検証の記録（Markdown）。playground が書く（同上）。DynamoDB の 1 項目は 400KB が上限なので、playground が `note_md` と `draft_md` を合わせて 350KB までに収める。超えたら記録のログ部分を切り詰め、末尾に全文の置き場（playground の `exp/<feature>/NOTE.md`）を書く。サイトでは途中で切れた記録がそのまま出る |
 | `draft_md` / `has_draft` | ブログの下書き（Markdown）と、その有無。一覧に本文を載せずに「下書きあり」を出すため `has_draft` を分ける（同上） |
 
 GSI `by-status`（パーティションキー `status`、ソートキー `approved_at`）。テーブル名と GSI 名は CDK の出力 `VerifyTableName` / `VerifyStatusIndex` にも出す。
