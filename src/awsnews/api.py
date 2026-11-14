@@ -5,8 +5,8 @@
 | POST /api/verify            | 記事を承認し、verify-requests に approved で書く   |
 | GET  /api/verify            | 承認した記事の一覧と状態（本文は含めない）         |
 | GET  /api/verify/{id}       | 1 件の検証記録（note_md）と下書き（draft_md）      |
-| GET  /api/settings          | 通知するサービスの一覧                             |
-| POST /api/settings          | 通知するサービスの一覧を置き換える                 |
+| GET  /api/settings          | 通知するサービスと種類                             |
+| POST /api/settings          | 通知するサービスと種類を置き換える                 |
 
 認証は CloudFront Function（Basic 認証）が済ませている。
 """
@@ -61,8 +61,7 @@ def handler(event, context) -> dict:
         item = verify.get_request(verify_table, m.group(1))
         return response(200, item) if item else response(404, {"error": "見つからない"})
     if path == "/api/settings" and method == "GET":
-        default = load_site(CONFIG_PATH).notify_default
-        return response(200, {"services": notify.load_services(table, default)})
+        return response(200, notify.load_settings(table, load_site(CONFIG_PATH)))
 
     if method != "POST":
         return response(405, {"error": "このパスでは受け付けないメソッド"})
@@ -73,9 +72,10 @@ def handler(event, context) -> dict:
     if path == "/api/verify":
         return response(*verify.approve(table, verify_table, body))
     if path == "/api/settings":
-        services = body.get("services")
+        services, kinds = body.get("services"), body.get("kinds")
         if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
             return response(400, {"error": "services を文字列の配列で送ること"})
-        saved = notify.save_services(table, services)
-        return response(200, {"services": saved})
+        if not isinstance(kinds, list) or not all(k in notify.KINDS for k in kinds):
+            return response(400, {"error": f"kinds は {list(notify.KINDS)} から選ぶこと"})
+        return response(200, notify.save_settings(table, services, kinds))
     return response(404, {"error": "そのパスは無い"})

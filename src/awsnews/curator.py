@@ -32,6 +32,8 @@ MUST: title_ja は原題の直訳ではなく、何の話かが分かる日本�
 MUST: summary には「何が発表・報告されたか」だけを書け。
 MUST: impact には「読者の実装や技術判断に何が効くか」を具体的に 1 文で書け。
 MUST: tags には記事の主題になっている AWS のサービスを正式名で挙げよ。
+MUST: kind はリージョンやインスタンスサイズの追加だけなら expansion にせよ。新しい機能と取り違えるな。
+MUST: ブログ記事は、新しいサービスや機能をその記事で初めて発表しているのでなければ howto にせよ。既存の機能の使い方・構成例・事例・コスト最適化の話は howto だ。
 DO NOT USE INFORMATION THAT IS NOT IN THE DOCUMENT ABOVE!"""
 
 

@@ -261,7 +261,7 @@ GSI `by-status`（パーティションキー `status`、ソートキー `approv
 - タブは「すべて / 新機能 / AI ブログ / 通知対象 / 検証」。「通知対象」は通知するサービスのどれかをタグに持つ記事
 - トップ記事は、通知対象の最新。無ければ全体の最新。上半分には点数の代わりにサービス名を大きく出す
 - 「検証」タブは承認した記事の状態と結果を並べ、終わったものは「記録を読む」「下書きを読む」で本文をダイアログに出す。下書きはコピーして Qiita に貼る想定なので、Markdown を描画せずそのまま出す
-- 通知設定のダイアログは、直近の記事に出てきたサービスを件数つきで並べ、名前で絞り込める
+- 通知設定のダイアログは、上に記事の種類、下に直近の記事に出てきたサービスを件数つきで並べる。サービスは名前で絞り込める
 - 点数や種類を持った古い記録が DynamoDB に残っていても、画面は読み捨てる。`llm-vendors` の記事は出さない
 
 受け口（`awsnews.api.handler`、`/api/*`）
@@ -271,8 +271,25 @@ GSI `by-status`（パーティションキー `status`、ソートキー `approv
 | `POST /api/verify` | 記事を承認する | articles の GetItem、verify-requests の PutItem |
 | `GET /api/verify` | 承認した記事の一覧（本文を除く） | verify-requests の Scan |
 | `GET /api/verify/{id}` | 記録と下書き | verify-requests の GetItem |
-| `GET /api/settings` | 通知するサービス | articles の GetItem |
-| `POST /api/settings` | 通知するサービスを置き換える | articles の PutItem（`dynamodb:LeadingKeys` で `#settings` に限る） |
+| `GET /api/settings` | 通知するサービスと種類 | articles の GetItem |
+| `POST /api/settings` | 通知するサービスと種類を置き換える | articles の PutItem（`dynamodb:LeadingKeys` で `#settings` に限る） |
+
+## 記事の種類で通知を絞る（2026-11-14）
+
+サービス単位で選ぶだけでは、Bedrock の「東京リージョンに対応」も通知されてしまう。
+また re:Invent で発表される AI の新サービスは、名前がまだ通知のリストに無いので届かない。
+そこで要約のときに、モデルに次の 2 つも付けさせる。
+
+- `kind`：`new_service`（新サービス）/ `feature`（新機能）/ `expansion`（リージョン・インスタンスなどの追加）/ `howto`（解説・事例）/ `other`（料金・その他）
+- `generative_ai`：生成 AI・LLM・AI エージェントに関わる記事か
+
+通知の条件は「選んだサービスをタグに持ち、かつ選んだ種類」または「`new_service` かつ `generative_ai`」。
+種類の初期値は `new_service` と `feature`。種類が付く前に要約した記事は、サイトではサービス名だけで判断する。
+
+Nova 2 Lite で直近の What's New 40 件ほどと AI ブログ 16 件を分類させて確かめた（2026-11-14）。
+What's New はリージョンとインスタンスの追加が `expansion`、機能追加が `feature` に分かれた。
+AI ブログは初め解説記事まで `feature` にしたため、「その記事で初めて発表しているのでなければ `howto`」と指示を足した。
+足したあとは 10 件中 8 件が `howto` になった。
 
 ## コードの変更点
 

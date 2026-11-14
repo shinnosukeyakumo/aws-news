@@ -1,9 +1,13 @@
-"""通知の設定（どのサービスを通知するか）と、Slack への送信。
+"""通知の設定（どのサービスのどの種類の記事を通知するか）と、Slack への送信。
+
+通知するのは次のどちらかに当たる記事:
+- 生成 AI の新サービス。名前がまだ誰にも分からないので、サービス名も種類も問わない
+- 選んだサービスをタグに持ち、かつ選んだ種類（Curation.kind）の記事
 
 設定は articles テーブルの 1 項目（pk="#settings", sk="notify"）に置く。
 pk がエージェントの key と重ならず、feed 属性も持たないので、
 既読の判定にもサイトの一覧（GSI by-date）にも混ざらない。
-設定がまだ無いときは sources.yaml の site.notify_default を使う。
+設定がまだ無いときは sources.yaml の site.notify_default / notify_kinds_default を使う。
 
 Slack の Incoming Webhook の URL は Secrets Manager に置き、コードと CDK には書かない。
 """
@@ -15,13 +19,22 @@ import logging
 import urllib.request
 from datetime import datetime, timezone
 
-from .models import CuratedArticle
+from .config import SiteConfig
+from .models import Curation, CuratedArticle
 
 logger = logging.getLogger("awsnews")
 
 _KEY = {"pk": "#settings", "sk": "notify"}
 # 1 回の通知に載せる記事の上限。re:Invent の時期に Slack が埋まらないようにする
 MAX_ITEMS = 20
+# 記事の種類。キーは Curation.kind の値。サイトの通知設定にもこの順で並ぶ
+KINDS = {
+    "new_service": "新サービス",
+    "feature": "新機能",
+    "expansion": "対応の拡大（リージョン・インスタンスなど）",
+    "howto": "解説・事例",
+    "other": "料金・その他",
+}
 
 
 def _table(name: str):
@@ -30,24 +43,32 @@ def _table(name: str):
     return boto3.resource("dynamodb").Table(name)
 
 
-def load_services(table_name: str, default: tuple[str, ...]) -> list[str]:
-    item = _table(table_name).get_item(Key=_KEY).get("Item")
-    return list(item["services"]) if item else list(default)
+def load_settings(table_name: str, site: SiteConfig) -> dict:
+    item = _table(table_name).get_item(Key=_KEY).get("Item") or {}
+    # 種類を選べるようになる前に保存した設定には kinds が無い
+    return {"services": list(item.get("services", site.notify_default)),
+            "kinds": list(item.get("kinds", site.notify_kinds_default))}
 
 
-def save_services(table_name: str, services: list[str]) -> list[str]:
-    cleaned = sorted({s.strip() for s in services if s.strip()})
+def save_settings(table_name: str, services: list[str], kinds: list[str]) -> dict:
+    saved = {"services": sorted({s.strip() for s in services if s.strip()}),
+             "kinds": [k for k in KINDS if k in kinds]}
     _table(table_name).put_item(Item={
-        **_KEY, "services": cleaned, "updated_at": datetime.now(timezone.utc).isoformat(),
+        **_KEY, **saved, "updated_at": datetime.now(timezone.utc).isoformat(),
     })
-    logger.info("通知するサービスを更新した: %s", cleaned)
-    return cleaned
+    logger.info("通知の設定を更新した: %s", saved)
+    return saved
 
 
-def targets(items: list[CuratedArticle], services: list[str]) -> list[CuratedArticle]:
-    """通知するサービスのどれかをタグに持つ記事。"""
-    wanted = {s.casefold() for s in services}
-    return [i for i in items if any(t.casefold() in wanted for t in i.curation.tags)]
+def wanted(c: Curation, settings: dict) -> bool:
+    if c.kind == "new_service" and c.generative_ai:
+        return True
+    services = {s.casefold() for s in settings["services"]}
+    return c.kind in settings["kinds"] and any(t.casefold() in services for t in c.tags)
+
+
+def targets(items: list[CuratedArticle], settings: dict) -> list[CuratedArticle]:
+    return [i for i in items if wanted(i.curation, settings)]
 
 
 def webhook_url(secret_id: str) -> str | None:
@@ -65,8 +86,8 @@ def message(items: list[CuratedArticle], site_url: str | None) -> dict:
     lines = [f"*AWS News* 通知対象の新着 {len(items)} 件"]
     for i in shown:
         c = i.curation
-        services = " / ".join(c.tags)
-        lines.append(f"• <{i.article.url}|{_escape(c.title_ja)}>  _{_escape(services)}_\n"
+        label = " / ".join([KINDS[c.kind].split("（")[0], *c.tags])
+        lines.append(f"• <{i.article.url}|{_escape(c.title_ja)}>  _{_escape(label)}_\n"
                      f"   {_escape(c.impact)}")
     if len(items) > len(shown):
         lines.append(f"ほか {len(items) - len(shown)} 件")

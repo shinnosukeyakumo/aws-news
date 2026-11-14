@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import notify, publish, site, verify
 from .cli import run_agent
-from .config import load_agents, load_site
+from .config import SiteConfig, load_agents, load_site
 from .models import CuratedArticle
 from .store import DynamoStore
 
@@ -41,7 +41,7 @@ def handler(event, context) -> dict:
             failed += 1
             logger.exception("[%s] エージェントの実行に失敗", config.key)
 
-    notified = _notify(table_name, site_config.notify_default, fresh)
+    notified = _notify(table_name, site_config, fresh)
 
     # 要約が一部失敗しても、溜まっている分からサイトは作り直す
     since = datetime.now(timezone.utc) - timedelta(days=site_config.days)
@@ -65,10 +65,10 @@ def handler(event, context) -> dict:
             "articles": len(articles), "failed_agents": failed}
 
 
-def _notify(table_name: str, default: tuple[str, ...], fresh: list[CuratedArticle]) -> int:
-    """通知するサービスに当たる新着を Slack に 1 通で送る。失敗してもサイトの更新は続ける。"""
+def _notify(table_name: str, site_config: SiteConfig, fresh: list[CuratedArticle]) -> int:
+    """通知の設定に当たる新着を Slack に 1 通で送る。失敗してもサイトの更新は続ける。"""
     try:
-        hits = notify.targets(fresh, notify.load_services(table_name, default))
+        hits = notify.targets(fresh, notify.load_settings(table_name, site_config))
         if not hits:
             return 0
         url = notify.webhook_url(os.environ["SLACK_SECRET_ID"])

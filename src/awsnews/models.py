@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -68,6 +70,20 @@ class Curation(BaseModel):
             "記事の主題になっている AWS のサービス名。正式名で最大 3 個。"
             "例: Amazon EC2, AWS Lambda, Amazon Bedrock AgentCore。通知の要否はこの名前で決まる。"
         ),
+    )
+    kind: Literal["new_service", "feature", "expansion", "howto", "other"] = Field(
+        description=(
+            "記事の種類を 1 つ選ぶ。"
+            "new_service: これまで無かったサービスや製品の発表。"
+            "feature: 既存のサービスに新しい機能が加わった。Bedrock で使えるモデルが増えた場合もここ。"
+            "expansion: 機能はそのままで、使える範囲が広がっただけ。"
+            "リージョンの追加、インスタンスタイプやサイズの追加、対応する OS やエンジンのバージョンの追加。"
+            "howto: 使い方の解説、構築例、導入事例。"
+            "other: 料金の改定、名前の変更、提供終了など、上のどれにも当たらないもの。"
+        ),
+    )
+    generative_ai: bool = Field(
+        description="生成 AI、LLM、AI エージェントに関わる記事なら true。それ以外は false。",
     )
 
 

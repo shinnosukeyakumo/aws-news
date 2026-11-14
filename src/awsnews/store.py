@@ -199,4 +199,6 @@ def to_record(item: CuratedArticle) -> dict:
         "summary": c.summary,
         "impact": c.impact,
         "tags": c.tags,
+        "kind": c.kind,
+        "generative_ai": c.generative_ai,
     }

@@ -13,11 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import SiteConfig
+from .notify import KINDS
 
 
 def render(articles: list[dict], site: SiteConfig, *,
            generated_at: datetime | None = None, api: bool = False,
-           notify_services: list[str] | None = None) -> str:
+           notify: dict | None = None) -> str:
     """記事の一覧（store.to_record の形）からページ全体の HTML を返す。
 
     api=True のときだけ「検証する」ボタンと「通知設定」を出す。受け口の /api/*
@@ -27,7 +28,9 @@ def render(articles: list[dict], site: SiteConfig, *,
     payload = {
         "generated_at": generated,
         "api": api,
-        "notify": notify_services if notify_services is not None else list(site.notify_default),
+        "notify": notify or {"services": list(site.notify_default),
+                             "kinds": list(site.notify_kinds_default)},
+        "kinds": KINDS,
         "watch": [{"name": w.name, "pattern": w.pattern} for w in site.watch],
         "articles": [{**a, "tags": site.normalize_tags(a.get("tags") or [])} for a in articles],
     }
@@ -219,6 +222,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 .svcs label{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid var(--rule);font-size:14px;cursor:pointer}
 .svcs label .n{margin-left:auto;font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
 .svcs input{width:18px;height:18px;accent-color:var(--accent);flex:none}
+.dlg-b h3{margin:8px 0 0;font-size:13px;font-weight:700;color:var(--sub)}
 .doc{margin:0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.7}
 .doc-tabs{display:flex;gap:6px}
 .doc-tabs .chip[aria-pressed="true"]{background:var(--accent);color:#fff}
@@ -244,12 +248,15 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     <div id="feed"></div>
   </div>
 </div></main>
-<footer><div class="wrap">「通知」の印は Slack に通知する対象のサービスです。見出しと要約は AI による自動生成のため、原文もご確認ください。</div></footer>
+<footer><div class="wrap">「通知」の印は Slack に通知する対象の記事です。見出しと要約は AI による自動生成のため、原文もご確認ください。</div></footer>
 
 <dialog id="dset" aria-labelledby="dset-h"><form method="dialog" class="dlg">
-  <div class="dlg-h"><h2 id="dset-h">通知するサービス</h2></div>
+  <div class="dlg-h"><h2 id="dset-h">通知の設定</h2></div>
   <div class="dlg-b">
-    <p class="hint">チェックしたサービスの新着だけを Slack に送ります。一覧には全部の記事が出ます。</p>
+    <p class="hint">チェックしたサービスの、チェックした種類の新着を Slack に送ります。生成 AI の新サービスは、ここの設定にかかわらず送ります。一覧には全部の記事が出ます。</p>
+    <h3>種類</h3>
+    <div class="svcs" id="dset-kinds"></div>
+    <h3>サービス</h3>
     <input type="search" id="dset-q" placeholder="サービス名で絞り込む" autocomplete="off">
     <div class="svcs" id="dset-list"></div>
   </div>
@@ -283,9 +290,14 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   try{const s=localStorage.getItem('awsnews-tab'); if(TABS.some(t=>t[0]===s)) cur=s;}catch(e){}
   const pub=a=>a.published_at||a.sort_at||D.generated_at;
 
-  // 通知するサービス。ページに埋め込んだ値で描き、/api/settings で取り直す
-  let notifySet=new Set((D.notify||[]).map(s=>s.toLowerCase()));
-  const isBell=a=>(a.tags||[]).some(t=>notifySet.has(t.toLowerCase()));
+  // 通知の設定。ページに埋め込んだ値で描き、/api/settings で取り直す
+  const KINDS=D.kinds;
+  let notifySet, kindSet;
+  const setNotify=n=>{D.notify=n; notifySet=new Set(n.services.map(s=>s.toLowerCase())); kindSet=new Set(n.kinds);};
+  setNotify(D.notify);
+  // 生成 AI の新サービスは名前を問わず通知する。種類が付く前に要約した記事は、サービス名だけで判断する
+  const isBell=a=>(a.kind==='new_service'&&a.generative_ai)
+    ||((!a.kind||kindSet.has(a.kind))&&(a.tags||[]).some(t=>notifySet.has(t.toLowerCase())));
   const hasTag=a=>curTags.every(t=>(a.tags||[]).includes(t));
   const inTab=a=>cur==='all'||(cur==='bell'?isBell(a):a.agent_key===cur);
 
@@ -334,7 +346,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     const tagHtml=list.map(([t,n])=>`<button class="chip" data-tag="${esc(t)}" aria-pressed="${curTags.includes(t)}">${esc(t)}<span class="n">${n}</span></button>`).join('');
     document.querySelectorAll('.tagbar').forEach(el=>el.innerHTML=tagHtml);
   }
-  const kicker=a=>`<p class="kicker"><span class="cat">${SRC[a.agent_key].name}</span>${isBell(a)?'<span class="bell">通知</span>':''}${isNew(a)?'<span class="bell" style="color:var(--new)">新着</span>':''}</p>`;
+  const kicker=a=>`<p class="kicker"><span class="cat">${SRC[a.agent_key].name}</span>${a.kind?`<span>${esc(KINDS[a.kind].split('（')[0])}</span>`:''}${isBell(a)?'<span class="bell">通知</span>':''}${isNew(a)?'<span class="bell" style="color:var(--new)">新着</span>':''}</p>`;
   const tagList=a=>`<div class="tags">${(a.tags||[]).slice(0,3).map(t=>`<button data-tag="${esc(t)}" aria-pressed="${curTags.includes(t)}">${esc(t)}</button>`).join('')}</div>`;
   const vbox=a=>{
     if(!D.api) return '';
@@ -376,7 +388,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     if(cur==='all'&&!curTags.length&&watched.length) h+=`<section class="watch watch-main" aria-label="ウォッチ">${watchHtml(5)}</section>`;
     const label=TABS.find(t=>t[0]===cur)[1];
     if(curTags.length) h+=`<div class="filter"><span><b>${label}</b> の中で ${curTags.map(t=>`#${esc(t)}`).join(' ')} ・ ${items.length} 件</span><button data-clear>解除</button></div>`;
-    if(!items.length) h+=`<p class="empty">${cur==='bell'?'通知するサービスの記事はまだありません。右上の「通知設定」でサービスを選べます。':'この条件の記事はまだありません。'}</p>`;
+    if(!items.length) h+=`<p class="empty">${cur==='bell'?'通知対象の記事はまだありません。右上の「通知設定」でサービスと種類を選べます。':'この条件の記事はまだありません。'}</p>`;
     else{
       // トップ記事は通知対象の最新。無ければ全体の最新
       const top=items.find(isBell)||items[0];
@@ -409,28 +421,32 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   }
 
   // 通知設定
-  const dset=document.getElementById('dset'), dlist=document.getElementById('dset-list'), dq=document.getElementById('dset-q');
-  let draftSet=new Set();
+  const dset=document.getElementById('dset'), dlist=document.getElementById('dset-list'), dq=document.getElementById('dset-q'), dkinds=document.getElementById('dset-kinds');
+  let draftSet=new Set(), draftKinds=new Set();
+  function renderKinds(){
+    dkinds.innerHTML=Object.entries(KINDS).map(([k,t])=>`<label><input type="checkbox" data-kind="${esc(k)}" ${draftKinds.has(k)?'checked':''}>${esc(t)}</label>`).join('');
+  }
   function renderSettings(){
     const c=new Map(); A.forEach(a=>(a.tags||[]).forEach(t=>c.set(t,(c.get(t)||0)+1)));
     // 保存済みで直近の記事に出てこないサービスも残す
     const names=new Map([...c.keys()].map(t=>[t.toLowerCase(),t]));
-    draftSet.forEach(s=>{ if(!names.has(s)) names.set(s,(D.notify||[]).find(x=>x.toLowerCase()===s)||s); });
+    draftSet.forEach(s=>{ if(!names.has(s)) names.set(s,D.notify.services.find(x=>x.toLowerCase()===s)||s); });
     const q=dq.value.trim().toLowerCase();
     const list=[...names].filter(([k])=>!q||k.includes(q))
       .sort((x,y)=>draftSet.has(y[0])-draftSet.has(x[0])||(c.get(y[1])||0)-(c.get(x[1])||0)||x[1].localeCompare(y[1],'ja'));
     dlist.innerHTML=list.map(([k,t])=>`<label><input type="checkbox" data-svc="${esc(k)}" data-name="${esc(t)}" ${draftSet.has(k)?'checked':''}>${esc(t)}<span class="n">${c.get(t)||0} 件</span></label>`).join('')||'<p class="hint">当てはまるサービスがありません。</p>';
   }
-  document.getElementById('setbtn').addEventListener('click',()=>{draftSet=new Set(notifySet); dq.value=''; renderSettings(); dset.showModal();});
+  document.getElementById('setbtn').addEventListener('click',()=>{draftSet=new Set(notifySet); draftKinds=new Set(kindSet); dq.value=''; renderKinds(); renderSettings(); dset.showModal();});
+  dkinds.addEventListener('change',e=>{const k=e.target.dataset.kind; if(!k) return; e.target.checked?draftKinds.add(k):draftKinds.delete(k);});
   dq.addEventListener('input',renderSettings);
   dlist.addEventListener('change',e=>{const k=e.target.dataset.svc; if(!k) return; e.target.checked?draftSet.add(k):draftSet.delete(k);});
   dset.addEventListener('close',async()=>{
     if(dset.returnValue!=='save') return;
     const named=new Map([...dlist.querySelectorAll('[data-svc]')].map(i=>[i.dataset.svc,i.dataset.name]));
     A.forEach(a=>(a.tags||[]).forEach(t=>named.has(t.toLowerCase())||named.set(t.toLowerCase(),t)));
-    (D.notify||[]).forEach(t=>named.has(t.toLowerCase())||named.set(t.toLowerCase(),t));
+    D.notify.services.forEach(t=>named.has(t.toLowerCase())||named.set(t.toLowerCase(),t));
     const services=[...draftSet].map(k=>named.get(k)||k);
-    try{ const r=await post('/api/settings',{services}); D.notify=r.services; notifySet=new Set(r.services.map(s=>s.toLowerCase())); renderAll(); }
+    try{ setNotify(await post('/api/settings',{services,kinds:[...draftKinds]})); renderAll(); }
     catch(err){ alert(`保存できませんでした（${err.message}）`); }
   });
 
@@ -477,7 +493,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   // AWS 上のサイトでだけ、設定と検証の状態を取り直す
   if(D.api){
     document.getElementById('setbtn').hidden=false;
-    get('/api/settings').then(r=>{D.notify=r.services; notifySet=new Set(r.services.map(s=>s.toLowerCase())); renderAll();}).catch(()=>{});
+    get('/api/settings').then(r=>{setNotify(r); renderAll();}).catch(()=>{});
     get('/api/verify').then(r=>{V=r; renderAll();}).catch(()=>{});
   }
 })();

@@ -31,6 +31,13 @@ site:
     - Amazon Bedrock Knowledge Bases
     - Amazon Nova
     - Strands Agents
+  # 通知する記事の種類の初期値。上のサービスに当たっても、ここに無い種類は通知しない。
+  # new_service（新サービス）/ feature（新機能）/ expansion（リージョン・インスタンスなどの追加）
+  # / howto（解説・事例）/ other（料金・その他）
+  # 生成 AI の新サービスは、サービス名も種類も問わず必ず通知する。
+  notify_kinds_default:
+    - new_service
+    - feature
   # ウォッチ: タブを問わず、タグか題名に当たった記事を見出しで並べる。
   # pattern は正規表現（大文字小文字は区別しない）。
   watch:
