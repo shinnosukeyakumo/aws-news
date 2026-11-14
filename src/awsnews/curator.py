@@ -25,14 +25,13 @@ _TASK_TEMPLATE = """##Article##
 {article}
 
 ##Task##
-上記の記事を Scoring Criteria に照らして採点し、担当領域の読者に向けた日本語の要約を作れ。
+上記の記事について、担当領域の読者に向けた日本語の要約を作れ。
 
 ##Instructions##
-MUST: score は 0〜100 の整数で付けよ。判断は Scoring Criteria のみに従え。
 MUST: title_ja は原題の直訳ではなく、何の話かが分かる日本語の見出しにせよ。
 MUST: summary には「何が発表・報告されたか」だけを書け。
 MUST: impact には「読者の実装や技術判断に何が効くか」を具体的に 1 文で書け。
-MUST: 本文が短く内容を判断しきれない場合は、その旨を reason に書き、score を控えめに付けよ。
+MUST: tags には記事の主題になっている AWS のサービスを正式名で挙げよ。
 DO NOT USE INFORMATION THAT IS NOT IN THE DOCUMENT ABOVE!"""
 
 
@@ -54,7 +53,7 @@ class Curator:
     """1 つの担当領域を受け持つエージェント。
 
     記事ごとに Agent インスタンスを作り直す。会話履歴を共有すると
-    前の記事の判断が次の記事のスコアに引きずられるため、意図的に独立させている。
+    前の記事の要約が次の記事に引きずられるため、意図的に独立させている。
     モデル接続（BedrockModel）だけは使い回す。
     """
 
@@ -94,9 +93,7 @@ class Curator:
             logger.error("[%s] 構造化出力が空 %s", self.config.key, article.url)
             return None
 
-        logger.info(
-            "[%s] score=%3d %s", self.config.key, curation.score, curation.title_ja
-        )
+        logger.info("[%s] %s %s", self.config.key, curation.title_ja, curation.tags)
         return CuratedArticle(
             article=article, curation=curation, agent_key=self.config.key
         )

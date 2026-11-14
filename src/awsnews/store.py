@@ -39,8 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_articles_sort ON articles (sort_at);
 
 class Store(Protocol):
     def filter_unseen(self, agent_key: str, urls: list[str]) -> set[str]: ...
-    def mark(self, agent_key: str, url: str, title: str, score: int | None,
-             notified: bool) -> None: ...
+    def mark(self, agent_key: str, url: str, title: str, ok: bool) -> None: ...
     def save(self, item: CuratedArticle) -> None: ...
     def recent(self, since: datetime) -> list[dict]: ...
     def stats(self) -> list[tuple[str, int, int]]: ...
@@ -80,25 +79,25 @@ class SeenStore:
             ).fetchall()
         return set(urls) - {r[0] for r in rows}
 
-    def mark(self, agent_key: str, url: str, title: str, score: int | None,
-             notified: bool) -> None:
+    def mark(self, agent_key: str, url: str, title: str, ok: bool) -> None:
+        # score 列は点数をやめる前の名残。notified 列に「要約できたか」を入れる
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO seen (url, agent_key, title, score, notified, seen_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (url, agent_key, title, score, int(notified),
+                "INSERT OR REPLACE INTO seen (url, agent_key, title, notified, seen_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (url, agent_key, title, int(ok),
                  datetime.now(timezone.utc).isoformat()),
             )
 
     def stats(self) -> list[tuple[str, int, int]]:
-        """(エージェント, 処理済み件数, 通知済み件数) の一覧。"""
+        """(エージェント, 処理済み件数, 要約できた件数) の一覧。"""
         with self._connect() as conn:
             return conn.execute(
                 "SELECT agent_key, COUNT(*), SUM(notified) FROM seen GROUP BY agent_key"
             ).fetchall()
 
     def save(self, item: CuratedArticle) -> None:
-        """採点結果をサイト用に保管する。並びは公開日（無ければ保管した時刻）で決める。"""
+        """要約結果をサイト用に保管する。並びは公開日（無ければ保管した時刻）で決める。"""
         record = to_record(item)
         with self._connect() as conn:
             conn.execute(
@@ -118,12 +117,13 @@ class SeenStore:
 
 
 class DynamoStore:
-    """DynamoDB 版。1 記事 1 項目で、既読の記録と採点結果を同じ項目に持つ。
+    """DynamoDB 版。1 記事 1 項目で、既読の記録と要約結果を同じ項目に持つ。
 
     キーは pk=エージェント、sk=URL。サイトに載せる項目にだけ feed="all" を付け、
-    GSI by-date（feed, sort_at）で新しい順に引く。採点に失敗した記事は
+    GSI by-date（feed, sort_at）で新しい順に引く。要約に失敗した記事は
     feed を持たないので GSI に入らない（疎なインデックス）。
-    採点結果は JSON 文字列 body に入れる。数値が Decimal で返る扱いを避けるため。
+    要約結果は JSON 文字列 body に入れる。数値が Decimal で返る扱いを避けるため。
+    点数をやめる前の項目には score 属性と body.score が残っているが、読む側は無視する。
     """
 
     _BATCH = 100   # BatchGetItem の上限
@@ -145,10 +145,9 @@ class DynamoStore:
                 request = resp.get("UnprocessedKeys") or None
         return set(urls) - found
 
-    def mark(self, agent_key: str, url: str, title: str, score: int | None,
-             notified: bool) -> None:
-        # 採点できた記事は直後の save() が中身ごと上書きする。ここで書くのは失敗の記録だけ
-        if score is not None:
+    def mark(self, agent_key: str, url: str, title: str, ok: bool) -> None:
+        # 要約できた記事は直後の save() が中身ごと上書きする。ここで書くのは失敗の記録だけ
+        if ok:
             return
         self._table.put_item(Item={
             "pk": agent_key, "sk": url, "title_original": title, "status": "failed",
@@ -159,7 +158,7 @@ class DynamoStore:
         record = to_record(item)
         self._table.put_item(Item={
             "pk": item.agent_key, "sk": item.article.url, "status": "curated",
-            "feed": "all", "sort_at": record["sort_at"], "score": record["score"],
+            "feed": "all", "sort_at": record["sort_at"],
             "body": json.dumps(record, ensure_ascii=False),
             "seen_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -199,8 +198,5 @@ def to_record(item: CuratedArticle) -> dict:
         "title_ja": c.title_ja,
         "summary": c.summary,
         "impact": c.impact,
-        "score": c.score,
-        "reason": c.reason,
-        "category": c.category,
         "tags": c.tags,
     }

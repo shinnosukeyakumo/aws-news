@@ -5,6 +5,9 @@ Discord への配信をやめ、選別・要約した記事をスマホで読め
 
 状態: 実装済み。2026-11-03 に ap-northeast-1 へデプロイし、手動実行でサイトの生成と Basic 認証を確認した。
 
+2026-11-14 に作り直した（点数をやめ、Slack 通知と検証の画面を足した）。下の「点数をやめ、通知と検証を一画面に（2026-11-14）」が今の形で、
+それより前に書いた点数・種類のタブ・`min_score` の話は経緯として残している。
+
 ## 目的と前提
 
 - Discord や Slack の埋め込みは幅が狭く、スマホで読みにくい。1 記事を 1 枚のカードとして読める画面にする
@@ -217,6 +220,7 @@ playground 側の設計は `~/aws-demo/03-projects/research/agentcore-playground
        articles から記事を読み、verify-requests に status=approved で書く（attribute_not_exists(id)）
 agentcore-playground（Mac） → by-status で approved を拾い、picked → done / needs-real / failed と書き戻す
 Curator（定期実行） → verify-requests を Scan し、カードに状態を出す
+サイトを開いたとき → GET /api/verify で状態を取り直し、「検証」タブで記録と下書きを GET /api/verify/{id} で読む
 ```
 
 テーブル `aws-news-verify-requests`（オンデマンド、PITR、スタックを消しても残す）
@@ -228,14 +232,47 @@ Curator（定期実行） → verify-requests を Scan し、カードに状態�
 | `status` | `approved`（ボタン）→ `picked` → `done` / `needs-real` / `failed`（playground） |
 | `approved_at` / `picked_at` / `done_at` | ISO 8601 |
 | `exp` / `message` | playground が書く |
+| `result` | `PASS` / `FAIL` / `UNSUPPORTED` / `ERROR`。playground が書く（2026-11-14 追加） |
+| `note_md` | 検証の記録（Markdown）。playground が書く（同上） |
+| `draft_md` / `has_draft` | ブログの下書き（Markdown）と、その有無。一覧に本文を載せずに「下書きあり」を出すため `has_draft` を分ける（同上） |
 
 GSI `by-status`（パーティションキー `status`、ソートキー `approved_at`）。テーブル名と GSI 名は CDK の出力 `VerifyTableName` / `VerifyStatusIndex` にも出す。
 
-- 受け口の Lambda は Curator と同じイメージを使い、入口（CMD）だけ `awsnews.verify.handler` に替える。ビルドは 1 回で済む
+- 受け口の Lambda は Curator と同じイメージを使い、入口（CMD）だけ `awsnews.api.handler` に替える。ビルドは 1 回で済む
 - OAC 経由で Lambda に POST するときは、本文の SHA-256 を `x-amz-content-sha256` ヘッダーで送る決まりがある。ページの JS が計算して付ける
-- ボタンは押す前に確認を出す。押したあとはその場で「承認済み」に変わり、その先の状態はサイトの次の更新で出る
+- ボタンは押す前に確認を出す。押したあとはその場で「承認済み」に変わる。その先の状態は、ページを開き直したときに /api/verify から取り直す
 - ボタンは AWS 上のサイトにだけ出す。ローカルで `--site` を使って書き出すページには出さない
 - 同じ日に、セッションマップ向けに入れていた `articles.json` の CORS を外した
+
+## 点数をやめ、通知と検証を一画面に（2026-11-14）
+
+点数を付けても、Nova は帯の境界に張り付いて判別が粗く、結局は全部の見出しに目を通していた。
+そこで点数付けをやめ、全部を一覧に出したうえで「どのサービスの記事を手元に届けるか」を自分で選ぶ形にした。
+
+- **情報源は AWS に絞る。** What's New（AI 以外も含む全サービス）と AWS の AI ブログの 2 担当。LLM ベンダー担当（`llm-vendors`）は外した
+- **エージェントは要約だけをする。** `Curation` から `score` / `reason` / `category` を外し、`tags` に主題の AWS サービスを正式名で最大 3 つ挙げさせる。通知の要否はこのタグで決まる
+- **通知は AWS サービス単位で選ぶ。** サイト右上の「通知設定」で選び、articles テーブルの `pk=#settings, sk=notify` に置く。この pk はエージェントの key と重ならず、`feed` 属性も持たないので、既読判定にも一覧にも混ざらない。未設定なら `site.notify_default`
+- **通知先は Slack（Incoming Webhook）。** 1 回の実行で当たった新着を 1 通にまとめる（最大 20 件、超えた分は件数だけ）。URL は Secrets Manager の `aws-news/slack-webhook` に置き、`https://hooks.slack.com/` で始まらない値（CDK が作った直後のランダム値）のあいだは送らない
+- **What's New の上限は 60 件。** 平日 10〜20 件（2026-11-14 に RSS で数えた）。re:Invent の時期は 1 日 100 件を超えるが、あふれた分は次の回に回る
+- **検証と下書きは playground が作り、aws-news は見せるだけ。** 「1 つのアプリ」は画面を 1 つにする意味で、検証の実行場所は agentcore-playground のまま。記録と下書きは verify-requests に書き戻してもらう（上の表の `result` / `note_md` / `draft_md` / `has_draft`）
+
+画面
+
+- タブは「すべて / 新機能 / AI ブログ / 通知対象 / 検証」。「通知対象」は通知するサービスのどれかをタグに持つ記事
+- トップ記事は、通知対象の最新。無ければ全体の最新。上半分には点数の代わりにサービス名を大きく出す
+- 「検証」タブは承認した記事の状態と結果を並べ、終わったものは「記録を読む」「下書きを読む」で本文をダイアログに出す。下書きはコピーして Qiita に貼る想定なので、Markdown を描画せずそのまま出す
+- 通知設定のダイアログは、直近の記事に出てきたサービスを件数つきで並べ、名前で絞り込める
+- 点数や種類を持った古い記録が DynamoDB に残っていても、画面は読み捨てる。`llm-vendors` の記事は出さない
+
+受け口（`awsnews.api.handler`、`/api/*`）
+
+| メソッドとパス | 中身 | 権限 |
+|---|---|---|
+| `POST /api/verify` | 記事を承認する | articles の GetItem、verify-requests の PutItem |
+| `GET /api/verify` | 承認した記事の一覧（本文を除く） | verify-requests の Scan |
+| `GET /api/verify/{id}` | 記録と下書き | verify-requests の GetItem |
+| `GET /api/settings` | 通知するサービス | articles の GetItem |
+| `POST /api/settings` | 通知するサービスを置き換える | articles の PutItem（`dynamodb:LeadingKeys` で `#settings` に限る） |
 
 ## コードの変更点
 

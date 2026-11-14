@@ -1,4 +1,4 @@
-# ニュースキュレーターの定義。
+# ニュースキュレーターの定義。AWS の情報源だけを扱う。
 # エージェントを増やしたいときは agents: に 1 ブロック追加するだけでよい。
 # コードの変更は不要。
 
@@ -17,44 +17,21 @@ defaults:
   backfill_days: 3
   # 1 回の実行で 1 エージェントが処理する記事の上限（暴発防止）
   max_articles_per_run: 12
-  # このスコア未満はサイトで畳む（0-100）
-  # 閾値はモデルとセットで調整する。スコアの分布はモデルごとに違う。
-  # 同一記事群での実測（llm-vendors, 2026-09-05）:
-  #   Nova 2 Lite   95/85/85/75/75/30  → 高値に張り付く。事例紹介も 75 を付ける
-  #   Haiku 4.5     72/62/45/35/35/15
-  #   Sonnet 4.6    82/52/32/28/22/12  → 最も判別が効く
-  # 80 だと実装の解説記事（最高 79 点の帯）が全部畳まれるため 55 にしている。
-  min_score: 55
-
-# 全エージェント共通の重要度の段階。各エージェントの scoring の前に system prompt へ入る。
-# 段階の名前はサイトの表示（site.py の TIERS）と揃えている。
-tiers: |
-  重要度の段階（全担当で共通）:
-    90-100 必読    : 読まないと読者の実装や運用に支障が出るもの。
-                     破壊的変更、提供終了・非推奨化、セキュリティ修正、
-                     日々使う道具（Amazon Bedrock、Bedrock AgentCore、Strands Agents、Claude）の大きな機能追加。
-    80-89  要注目  : 設計の選択を変えうる新機能や知見。新モデルの発表もここが上限。
-    55-79  実装向け: 実装の落とし穴・ベンチマーク・設計例など、持ち帰れる具体的な情報。
-    30-54  限定的  : 技術的だが特定の業界・用途に閉じており応用が利かないもの。
-    0-29   参考    : 事例紹介にとどまるもの、既出機能の言い換え、宣伝。
-  判定の指針:
-    MUST: 90 点以上は、読まずにいると読者が困る記事だけに付けよ。話題性や新しさだけで 90 点以上を付けるな。
-    MUST: 新モデルの発表は、破壊的変更や提供終了を伴わない限り 89 点以下とせよ。
-
-# 記事の種類。サイトのタブになる。key は models.py の Category と一致させる。
-categories:
-  impl: 実装・設計。構築手順、設計パターン、移行ガイド、ベンチマーク、落とし穴など、手を動かすための記事
-  aws: AWS 新機能。AWS のサービスの新機能・GA・対応リージョン拡大・料金改定の告知
-  case: 事例。特定の企業・組織がどう導入したかが主題の記事
-  trend: 動向。安全性・政策・業界の動き・調査レポート・提携など、作り方ではなく流れを伝える記事
-  model: 新モデル・製品。新しいモデル、新しい製品・アプリそのものの発表（AWS のサービス新機能は aws）
 
 # サイトの設定
 site:
   title: AWS News
   # トップに並べる期間（公開日基準）
   days: 30
-  # 見張り: 点数とタブを問わず、タグか題名に当たった記事を見出しで並べる。
+  # 通知するサービスの初期値。サイトの「通知設定」で保存すると、そちら（DynamoDB）が優先される。
+  # 名前は tag_aliases で揃えたあとの正式名で書く。
+  notify_default:
+    - Amazon Bedrock
+    - Amazon Bedrock AgentCore
+    - Amazon Bedrock Knowledge Bases
+    - Amazon Nova
+    - Strands Agents
+  # ウォッチ: タブを問わず、タグか題名に当たった記事を見出しで並べる。
   # pattern は正規表現（大文字小文字は区別しない）。
   watch:
     - name: AgentCore
@@ -63,7 +40,7 @@ site:
       pattern: "Bedrock(?! AgentCore)"   # 「Amazon Bedrock AgentCore」を Bedrock に数えない
     - name: Strands
       pattern: Strands
-  # タグの表記揺れを採点のあとに揃える。正式名: [別名, ...]
+  # サービス名の表記揺れを要約のあとに揃える。正式名: [別名, ...]
   tag_aliases:
     Amazon Bedrock: [AWS Bedrock, Bedrock]
     Amazon Bedrock AgentCore: [Bedrock AgentCore, AgentCore, AWS Bedrock AgentCore]
@@ -71,7 +48,10 @@ site:
     Strands Agents: [Strands, Strands Agents SDK]
     Amazon Nova: [Nova]
     Amazon ECS: [Amazon Elastic Container Service, ECS]
-    Claude: [Claude Fable, Anthropic Claude]
+    Amazon EC2: [EC2, Amazon Elastic Compute Cloud]
+    AWS Lambda: [Lambda, Amazon Lambda]
+    Amazon S3: [S3, Amazon Simple Storage Service]
+    Amazon SageMaker: [SageMaker, Amazon SageMaker AI]
 
 agents:
   - key: aws-ai
@@ -82,22 +62,12 @@ agents:
       - type: rss
         url: https://aws.amazon.com/blogs/machine-learning/feed/
         label: AWS AI Blog
-    # このエージェントが「何者で、何を重要とみなすか」。選別と要約の両方に効く。
+    # このエージェントが「何者で、何を重要とみなすか」。要約の書きぶりに効く。
     charter: |
       あなたは AWS の生成 AI 領域を追う技術キュレーターだ。
       読者は AWS 上で LLM アプリケーションとエージェントを開発しているエンジニア。
       Amazon Bedrock、Bedrock AgentCore、Strands Agents、Amazon Nova、
       SageMaker の生成 AI 関連機能を最重要とみなす。
-    scoring: |
-      この担当での当てはめ:
-        90-100: Bedrock / AgentCore / Strands の使い方を変えざるを得ない変更や、それを解説する記事。
-        80-89 : アーキテクチャの選択を変えうる新機能・知見の解説。
-        55-79 : 実装の落とし穴・ベンチマーク・設計例など再利用できる具体的な情報。
-        30-54 : 技術的だが特定の業界・用途に閉じており応用が利かないもの。
-        0-29  : 事例紹介にとどまるもの、既出機能の言い換え、パートナー企業の宣伝。
-      判定の指針:
-        MUST: 読者が自分の実装に持ち帰れる情報（コード・構成・数値）が無い記事は 55 点未満とせよ。
-        MUST: 特定業界向けの導入事例は、再利用できる設計が示されていない限り 30 点未満とせよ。
 
   - key: aws-whatsnew
     name: AWS 新機能担当
@@ -107,65 +77,12 @@ agents:
       - type: rss
         url: https://aws.amazon.com/about-aws/whats-new/recent/feed/
         label: AWS What's New
-        # What's New は全サービスが流れてくるため、category による前段フィルタが要る。
-        # RSS の category に含まれる文字列で絞り込む（LLM に渡す前の足切り）
-        include_categories:
-          - general:products/aiml
+    # What's New は全サービスが流れてくる。平日は 1 日 10〜20 件（2026-11-14 実測）。
+    # re:Invent の時期は 1 日 100 件を超えるので上限を上げている。溢れた分は次の回に回る。
+    # 通知するかどうかはサイトの「通知設定」でサービスごとに決める。
+    max_articles_per_run: 60
     charter: |
       あなたは AWS の新機能アナウンスを追う技術キュレーターだ。
-      読者は AWS 上で LLM アプリケーションとエージェントを開発しているエンジニア。
+      読者は AWS 上でアプリケーションとエージェントを開発しているエンジニア。
+      生成 AI と無関係なサービスの告知も、同じ水準で要約する。
       「今日から何ができるようになったか」「既存の構成を変える必要があるか」を伝える。
-    scoring: |
-      この担当での当てはめ:
-        90-100: Amazon Bedrock / AgentCore の破壊的変更・提供終了・セキュリティ修正、
-                または AgentCore の大きな機能追加。
-        80-89 : Amazon Bedrock / AgentCore / SageMaker の新機能・GA・モデル追加のうち、
-                エージェント開発の構成を変えうるもの。
-        55-79 : 生成 AI 関連の実用的な機能改善。既存構成の一部を置き換えられるもの。
-        30-54 : 生成 AI 関連だが影響が限定的なもの。
-        0-29  : 生成 AI と無関係なもの、既存機能の軽微なアップデート、
-                提供リージョン拡大だけを伝える告知。
-      判定の指針:
-        MUST: What's New の本文には対応リージョンが書かれていないことが多い。
-              リージョンの記載がないことを理由に減点してはならない。
-        MUST: 生成 AI と無関係なサービスの告知は 20 点未満とせよ。
-
-  - key: llm-vendors
-    name: LLM ベンダー担当
-    emoji: "🔬"
-    color: 0xD4A27F          # Anthropic のブランドカラー系
-    sources:
-      # OpenAI / Google の RSS は description が 150 文字程度しかないため、
-      # 記事ページから本文を取り直す（2026-09-05 実測）
-      - type: rss
-        url: https://openai.com/news/rss.xml
-        label: OpenAI News
-        fetch_body: true
-      - type: rss
-        url: https://blog.google/technology/ai/rss/
-        label: Google AI Blog
-        fetch_body: true
-      # Anthropic は RSS を公開していないため sitemap の lastmod から新着を拾う
-      # （2026-09-05 時点で /rss.xml /feed.xml /news/rss.xml いずれも 404 を確認済み）
-      - type: sitemap
-        url: https://www.anthropic.com/sitemap.xml
-        label: Anthropic
-        path_prefixes:
-          - /news/
-          - /engineering/
-    charter: |
-      あなたは LLM ベンダー各社の発表を追う技術キュレーターだ。
-      読者は Amazon Bedrock 経由で Claude を使い、エージェントを開発しているエンジニア。
-      モデルの世代交代、API の破壊的変更、エージェント開発に効く機能を最重要とみなす。
-    scoring: |
-      この担当での当てはめ:
-        90-100: API の破壊的変更・提供終了、Claude のエージェント開発に直接効く大きな新機能。
-        80-89 : 新モデルのリリース、エージェント開発に効く新機能。
-        55-79 : 実装判断の参考になる技術レポート、性能・安全性の検証結果。
-        30-54 : 技術的な内容を含むが、読者の実装判断には直接効かないもの。
-        0-29  : 導入事例・資金調達・提携・政策提言・一般消費者向け機能の紹介。
-      判定の指針:
-        MUST: 「A 社が X を使って業務を N% 改善した」形の導入事例は、
-              API 仕様やモデル機能の新情報を含まない限り 30 点未満とせよ。
-        MUST: 資金提供・パートナーシップ・社会貢献の告知は 20 点未満とせよ。
-        MUST: 記事が新モデルの発表そのものであれば 80〜89 点とせよ。

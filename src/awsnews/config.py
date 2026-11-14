@@ -29,23 +29,18 @@ class AgentConfig:
     emoji: str
     color: int
     charter: str
-    scoring: str
     sources: tuple[SourceConfig, ...]
     model_id: str
     region: str
     backfill_days: int
     max_articles_per_run: int
-    min_score: int
     # "off" / "low" / "medium" / "high"。モデルごとの方言は modelspec.py が吸収する。
     reasoning_effort: str
     temperature: float
-    # 全担当共通の重要度の段階と、記事の種類の定義。system prompt に入る。
-    tiers: str = ""
-    categories: tuple[tuple[str, str], ...] = ()
 
     @property
     def system_prompt(self) -> str:
-        """このエージェントの人格と判断基準。選別と要約の両方に効く。
+        """このエージェントの人格と書きぶりの指示。
 
         Amazon Nova は Claude 流の自然な依頼文だと精度が落ちるため、
         セクション見出しと DO / DO NOT の命令形で構造化している。
@@ -53,11 +48,6 @@ class AgentConfig:
         """
         return (
             f"# Core Mandates\n{self.charter.strip()}\n\n"
-            f"# Scoring Criteria\n{self.tiers.strip()}\n\n{self.scoring.strip()}\n\n"
-            "# Category\n"
-            "category には次のうち最も当てはまる key を 1 つ選べ。\n"
-            + "".join(f"  {k}: {v}\n" for k, v in self.categories)
-            + "\n"
             "# Output Formatting\n"
             "MUST: 日本語で書く。常体（である調）で簡潔に書く。\n"
             "MUST: 字数の上限を守る。title_ja は 40 文字、summary は 120 文字、"
@@ -65,9 +55,11 @@ class AgentConfig:
             "MUST: 製品名・サービス名は原語表記のまま使う（例: Amazon Bedrock AgentCore）。\n"
             "MUST: 外来語は一般的な定訳のカタカナ表記を使え"
             "（multimodal はマルチモーダル、nightly は夜間）。\n"
-            "MUST: tags は記事本文に実際に登場する製品名・技術名だけを挙げよ。\n"
+            "MUST: tags には記事の主題になっている AWS のサービスを正式名で挙げよ"
+            "（例: Amazon EC2, AWS Lambda, Amazon Bedrock AgentCore）。"
+            "記事のカテゴリに products/... があれば、それを手がかりにせよ。\n"
             "DO NOT: 記事に書かれていない事実を補うな。推測を書くな。\n"
-            "DO NOT: 記事に出てこない製品名を tags に入れるな。\n"
+            "DO NOT: 記事に出てこないサービスを tags に入れるな。\n"
             "DO NOT: 日本語の文の中に英単語をそのまま混ぜるな。\n"
             "DO NOT: 「〜な世界が広がります」「〜は必見です」のような煽り文句を使うな。\n"
             "DO NOT: 「〜が可能になる」「〜が理解できる」のような一般論で impact を埋めるな。"
@@ -81,8 +73,7 @@ class AgentConfig:
             "  summary: 架空サービスの入力フィルタが画像の検査に対応した。"
             "テキストと同じポリシー定義で画像も扱え、追加のモデル呼び出しは要らない。\n"
             "  impact: 画像を受けるエージェントで、画像用のフィルタを別途実装する必要がなくなる。\n"
-            "  reason: 既存構成をそのまま置き換えられる機能追加であり、実装の削減に直結する。\n"
-            "  tags: 架空サービス, 入力フィルタ\n"
+            "  tags: 架空サービス\n"
         )
 
 
@@ -94,12 +85,13 @@ class WatchConfig:
 
 @dataclass(frozen=True)
 class SiteConfig:
-    """ニュースサイトの表示に関わる設定。採点には効かない。"""
+    """ニュースサイトの表示に関わる設定。要約には効かない。"""
 
     title: str
     days: int
-    min_score: int
     watch: tuple[WatchConfig, ...]
+    # 通知の設定がまだ無いときに通知するサービス
+    notify_default: tuple[str, ...] = ()
     # 別名 → 正式名
     tag_aliases: dict[str, str] = field(default_factory=dict)
 
@@ -119,8 +111,8 @@ def load_site(path: Path) -> SiteConfig:
     return SiteConfig(
         title=site.get("title", "aws-news"),
         days=int(site.get("days", 30)),
-        min_score=int(raw.get("defaults", {}).get("min_score", 55)),
         watch=tuple(WatchConfig(w["name"], w["pattern"]) for w in site.get("watch", [])),
+        notify_default=tuple(site.get("notify_default") or ()),
         tag_aliases=aliases,
     )
 
@@ -134,8 +126,6 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
     """
     raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     defaults = raw.get("defaults", {})
-    categories = tuple((str(k), str(v)) for k, v in (raw.get("categories") or {}).items())
-    _check_categories(categories)
 
     agents: list[AgentConfig] = []
     for entry in raw.get("agents", []):
@@ -160,7 +150,6 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
                 emoji=entry.get("emoji", "📰"),
                 color=int(entry.get("color", 0x5865F2)),
                 charter=entry["charter"],
-                scoring=entry["scoring"],
                 sources=sources,
                 model_id=entry.get("model_id", defaults["model_id"]),
                 region=entry.get("region", defaults["region"]),
@@ -168,15 +157,12 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
                 max_articles_per_run=int(
                     entry.get("max_articles_per_run", defaults["max_articles_per_run"])
                 ),
-                min_score=int(entry.get("min_score", defaults["min_score"])),
                 reasoning_effort=str(
                     entry.get("reasoning_effort", defaults.get("reasoning_effort", "off"))
                 ),
                 temperature=float(
                     entry.get("temperature", defaults.get("temperature", 0.3))
                 ),
-                tiers=str(raw.get("tiers", "")),
-                categories=categories,
             )
         )
 
@@ -186,17 +172,3 @@ def load_agents(path: Path, only: list[str] | None = None) -> list[AgentConfig]:
             raise SystemExit(f"設定に存在しないエージェント: {', '.join(sorted(missing))}")
     return agents
 
-
-def _check_categories(categories: tuple[tuple[str, str], ...]) -> None:
-    """YAML の種類とモデルの型がずれていたら起動時に止める。"""
-    from typing import get_args
-
-    from .models import Category
-
-    expected = set(get_args(Category))
-    got = {k for k, _ in categories}
-    if got != expected:
-        raise SystemExit(
-            f"sources.yaml の categories が models.Category と一致しない: "
-            f"YAML={sorted(got)} / 型={sorted(expected)}"
-        )

@@ -1,15 +1,16 @@
 # aws-news
 
-AWS と LLM ベンダーのニュースを、担当領域ごとのエージェントが選別・要約し、
+AWS の新機能アナウンス（What's New）と AWS の AI ブログを、担当ごとのエージェントが要約し、
 スマホと PC で読めるニュースサイト（1 枚の HTML）にする。
 
-RSS をそのまま並べるのではなく、各エージェントが自分の担当領域の基準で
-「読者にとって重要か」を 0〜100 点で判定し、日本語の見出し・要約・「効き目」と
-記事の種類（実装・設計 / AWS 新機能 / 事例 / 動向 / 新モデル・製品）を付ける。
+記事ごとに日本語の見出し・要約・「効き目」と、主題の AWS サービス名（タグ）を付ける。
+点数は付けない。全部を一覧に出し、選んだサービスの新着だけを Slack に通知する。
+気になった記事は「検証する」で承認すると、agentcore-playground が AWS Emulator で検証し、
+検証の記録とブログの下書きを書き戻す。サイトの「検証」タブで読める。
 
 ```
-情報源(RSS/sitemap) ─→ 収集 ─→ 既読を除外 ─→ エージェントが選別・要約 ─→ 保管 ─→ サイトを生成
-                                                    (Bedrock / Strands Agents)
+情報源(RSS) ─→ 収集 ─→ 既読を除外 ─→ エージェントが要約 ─→ 保管 ─┬→ サイトを生成
+                                        (Bedrock / Strands Agents)   └→ 通知対象を Slack へ
 ```
 
 AWS 上では東京リージョン（ap-northeast-1）で 1 日 2 回（9:00 / 18:00 JST）動き、
@@ -20,11 +21,13 @@ CloudFront の Basic 認証の内側でサイトを配信する。設計は `doc
 | key | 担当 | 情報源 |
 |---|---|---|
 | `aws-ai` | AWS の生成 AI 領域 | AWS AI Blog (旧 Machine Learning Blog) |
-| `aws-whatsnew` | AWS の新機能アナウンス | AWS What's New（`general:products/aiml` で前段フィルタ） |
-| `llm-vendors` | LLM ベンダーの発表 | OpenAI News / Google AI Blog / Anthropic |
+| `aws-whatsnew` | AWS の新機能アナウンス | AWS What's New（全サービス） |
 
-各エージェントは「担当領域の説明（charter）」と「評価基準（scoring）」を持ち、
-それが system prompt になる。同じコードが設定だけを差し替えて 3 体分動く。
+各エージェントは「担当領域の説明（charter）」を持ち、それが system prompt になる。
+同じコードが設定だけを差し替えて 2 体分動く。
+
+What's New は平日 1 日 10〜20 件ほど出る（2026-11-14 に RSS で数えた）。
+1 回の上限は 60 件にしてあり、re:Invent の時期にあふれた分は次の回に回る。
 
 ## セットアップ
 
@@ -37,39 +40,42 @@ AWS の認証は通常のプロファイル解決に従う（`aws sts get-caller
 ## 使い方
 
 ```bash
-# 集めて採点し、既読と記事を保管してサイトを書き出す
+# 集めて要約し、既読と記事を保管してサイトを書き出す
 uv run awsnews --site data/site.html
 
-# 保管せずに試す（同じ記事で繰り返し採点したいとき）
+# 保管せずに試す（同じ記事で繰り返し要約したいとき）
 uv run awsnews --no-store --days 7 --site data/site.html
 
 # 特定のエージェントだけ、件数を絞って試す
-uv run awsnews --agent llm-vendors --limit 3 --no-store
+uv run awsnews --agent aws-whatsnew --limit 3 --no-store
 
-# 採点し直さず、保管済みの記事だけでサイトを作り直す（画面の調整用）
+# 要約し直さず、保管済みの記事だけでサイトを作り直す（画面の調整用）
 uv run awsnews --site-only --site data/site.html
 
 # 既読 DB の統計
 uv run awsnews --stats
 ```
 
-採点結果は毎回標準出力にも出る。`--site-only` は保管済みの記事しか使わないため、
+要約の結果は毎回標準出力にも出る。`--site-only` は保管済みの記事しか使わないため、
 `--no-store` で試した分は載らない。
 
 ### サイトの作り
 
-- 上のタブで記事の種類を切り替え、タグで絞り込む（複数選ぶと AND）
+- タブは「すべて / 新機能 / AI ブログ / 通知対象 / 検証」。サービス名のタグで絞り込める（複数選ぶと AND）
+- 「通知対象」は、通知するサービスのどれかをタグに持つ記事。カードにも「通知」の印が付く
 - 「ウォッチ」の欄は、`site.watch` の言葉（AgentCore・Bedrock・Strands）に当たった記事を、
-  点数とタブを問わず見出しで並べる
-- `min_score`（55）に満たない記事は一番下に畳む
-- 重要度は 5 段階（必読 90 / 要注目 80 / 実装向け 55 / 限定的 30 / 参考）。段階の定義は `tiers`
+  タブを問わず見出しで並べる
 - 直近 `site.days`（30）日の記事を載せる
+- 「通知設定」「検証する」「検証」タブの記録と下書きは、AWS 上のサイトでだけ使える
+  （受け口の `/api/*` が CloudFront の裏にしか無いため）。ローカルで書き出したページには出ない
 
 ### AWS に載せる
 
 ```
 EventBridge Scheduler（9:00 / 18:00 JST）→ Lambda（コンテナ, arm64）→ DynamoDB / Bedrock（jp. Nova 2 Lite）
+                                                      ├→ Slack（Incoming Webhook。URL は Secrets Manager）
                                                       └→ S3 ←OAC─ CloudFront（CloudFront Functions で Basic 認証）
+                                       /api/* ─→ Lambda（Function URL, IAM 認証 + OAC）→ DynamoDB
 ```
 
 Docker が要る。CDK は `infra/` の中で動かす。
@@ -87,11 +93,32 @@ CLI の版を固定しているのは、`aws-cdk-lib` 2.273.0 が読めるクラ
 2026-11-03 には、Docker Desktop を再起動しても、Docker を通さず crane や aws s3 cp で送っても止まり、
 Mac を再起動したら通った（AWS 向けの TCP 接続が送信キューを積んだまま止まっていた）。
 
-カードの「検証する」を押すと、記事が DynamoDB の `aws-news-verify-requests` に `status=approved` で入る。
-これを agentcore-playground が拾って検証し、状態を書き戻す。次のサイト更新で、カードに
-承認済み / 検証中 / 下書きあり / 要実機 / 検証失敗 が出る。受け口は `/api/verify` で、
-CloudFront の裏の Lambda（Function URL、IAM 認証 + OAC）がサイトと同じ Basic 認証を通ってから受ける。
+サイトの `/api/*` は、CloudFront の裏の Lambda（Function URL、IAM 認証 + OAC）が
+サイトと同じ Basic 認証を通ってから受ける。
+
+| メソッドとパス | 中身 |
+|---|---|
+| `POST /api/verify` | 記事を承認し、`aws-news-verify-requests` に `status=approved` で書く |
+| `GET /api/verify` | 承認した記事の一覧と状態（本文は含めない） |
+| `GET /api/verify/{id}` | 1 件の検証記録（`note_md`）と下書き（`draft_md`） |
+| `GET /api/settings` | 通知するサービスの一覧 |
+| `POST /api/settings` | 通知するサービスの一覧を置き換える |
+
+承認した記事は agentcore-playground が拾って検証し、状態と記録・下書きを書き戻す。
 受け渡しの形は `docs/design.md` の「検証の依頼」にある。
+
+通知するサービスは、サイト右上の「通知設定」で選ぶ。保存先は articles テーブルの
+`pk=#settings, sk=notify` の 1 項目で、まだ保存していなければ `site.notify_default` を使う。
+1 回の実行で、通知するサービスに当たった新着を Slack に 1 通（最大 20 件）で送る。
+
+Slack の Webhook の URL もコードと CDK には書かない。CDK が作るシークレット
+`aws-news/slack-webhook` に、デプロイ後に URL を入れる。入れるまでは通知を送らない
+（`https://hooks.slack.com/` で始まらない値は無視する）。
+
+```bash
+aws secretsmanager put-secret-value --region ap-northeast-1 \
+  --secret-id aws-news/slack-webhook --secret-string 'https://hooks.slack.com/services/...'
+```
 
 パスワードはコードにも CDK にも書かない。デプロイ後に、出力の `AuthStoreArn` の
 KeyValueStore へキー `basic`（値は `ユーザー名:パスワード` の Base64）を登録する。
@@ -113,35 +140,12 @@ aws cloudfront-keyvaluestore put-key --region us-east-1 --kvs-arn "$ARN" --key b
 aws lambda invoke --region ap-northeast-1 --function-name <FunctionName> /dev/stdout
 ```
 
-### 共有用ダッシュボードを作る
-
-社内勉強会で画面を見ながら話すことを想定した週次まとめページ。サイトとは別物。
-
-```bash
-uv run awsnews --no-store --days 7 --limit 18 --dashboard data/dashboard.html
-
-# Artifact に載せる場合は DOCTYPE / head / body を省いた形で出す
-uv run awsnews --no-store --days 7 --limit 18 \
-  --dashboard data/dashboard.artifact.html --for-artifact
-```
-
-`--dashboard` を付けると同じ場所に `.json` も残る。HTML だけ作り直したいときは
-JSON から再生成できるので、記事の採点をやり直す必要はない。
-
-```python
-from pathlib import Path
-from awsnews import dashboard
-dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
-```
-
 ### 定期実行
 
-当面は cron で足りる。
+AWS に載せずローカルで回すなら cron で足りる（Slack 通知は AWS 上でだけ送る）。
 
 ```cron
 0 9,18 * * * cd /path/to/aws-news && /path/to/uv run awsnews --site data/site.html >> data/run.log 2>&1
-# 週次まとめ（月曜朝）
-0 8 * * 1 cd /path/to/aws-news && /path/to/uv run awsnews --days 7 --limit 18 --dashboard data/dashboard.html >> data/run.log 2>&1
 ```
 
 ## エージェントを増やす
@@ -160,14 +164,11 @@ dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
         fetch_body: true          # RSS の description が短い媒体で使う
     charter: |
       このエージェントが何者で、誰に向けて書くか。
-    scoring: |
-      高く評価する: ...
-      低く評価する: ...
 ```
 
 情報源の `type` は 2 種類。
 
-- `rss` — RSS / Atom フィード。`include_categories` で category による前段フィルタができる
+- `rss` — RSS / Atom フィード。`include_categories` で category による前段フィルタもできる（今は使っていない）
 - `sitemap` — RSS を出していないサイト向け。`lastmod` で新着を拾い、記事ページから本文と公開日を取る
 
 ## 主な設定（`config/sources.yaml` の `defaults`）
@@ -179,18 +180,20 @@ dashboard.build(Path("data/dashboard.json"), Path("data/dashboard.html"))
 | `reasoning_effort` | `off` | 思考モード。`off` / `low` / `medium` / `high` |
 | `temperature` | 0.3 | Nova は 0 にすると同じ文を繰り返す癖があるため 0 にしない |
 | `backfill_days` | 3 | この日数より古い記事は対象外 |
-| `max_articles_per_run` | 12 | 1 エージェントが 1 回で評価する上限 |
-| `min_score` | 55 | この点数未満はサイトで畳む |
+| `max_articles_per_run` | 12 | 1 エージェントが 1 回で要約する上限（What's New は 60） |
 
 `defaults` の値はエージェント単位で上書きできる。
 モデル比較のときは実行時にも上書きできる。
 
 ```bash
-uv run awsnews --agent llm-vendors --limit 6 --no-store --min-score 0 \
+uv run awsnews --agent aws-whatsnew --limit 6 --no-store \
   --model us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
-## モデル選択（2026-09-05 実測）
+## モデル選択（2026-09-05 実測、点数を付けていた頃の記録）
+
+2026-11-14 に点数付けをやめ、LLM ベンダーの担当（`llm-vendors`）も外した。
+以下はそれ以前の比較で、モデルの癖とプロンプトの書き方の記録として残している。
 
 同一の記事 6 件（`llm-vendors`）に同じプロンプトで付いたスコア。
 
@@ -263,7 +266,7 @@ scoring: |
 
 ### 実測コスト（Nova 2 Lite）
 
-全 3 エージェントを 1 回通した実測: 入力 56,262 / 出力 4,924 トークン。
+当時の全 3 エージェントを 1 回通した実測: 入力 56,262 / 出力 4,924 トークン。
 
 `us-west-2` の Nova 2.0 Lite は入力 $0.33 / 1M、出力 $2.75 / 1M（AWS Price List API より取得）
 なので **1 回あたり約 $0.032**。1 日 2 回なら月 $2 程度に収まる。
@@ -274,7 +277,7 @@ Claude Haiku 4.5 / Sonnet 4.6 の Bedrock 価格は、Price List API にも
 ## 設計上の判断
 
 **記事ごとに Agent インスタンスを作り直している**（`curator.py`）。
-会話履歴を共有すると前の記事の判断が次の記事のスコアに引きずられるため、意図的に独立させた。
+会話履歴を共有すると前の記事の判断が次の記事の要約に引きずられるため、意図的に独立させた。
 モデル接続（`BedrockModel`）だけは使い回している。
 
 **要約を `summary` と `impact` に分けている**（`models.py`）。
@@ -296,14 +299,11 @@ Nova は Claude 流の自然な依頼文だと精度が落ちるため。この�
 LLM に渡すのに足る密度があればよく、`<script>`/`<style>` を落として
 `<article>`/`<main>` 内の `<p>` を拾えば実用上足りることを実測で確認した。
 
-## 現状の制約（2026-09-05 時点で実測）
+## 現状の制約
 
-- **Anthropic は RSS を公開していない。** `/rss.xml` `/feed.xml` `/news/rss.xml`
-  `/engineering/rss.xml` いずれも 404。sitemap.xml の `lastmod` から新着を拾っている。
-  `lastmod` は更新日で公開日ではないため、記事ページ本文の日付表記を優先して使う。
-- **JS で本文を描画するページからは本文を取れない。** 例: OpenAI のシステムカード系ページ。
-  この場合は RSS の description（150 文字程度）だけで評価することになり、
-  エージェントは「判断材料が不足している」と reason に記した上でスコアを控えめに付ける。
+- **JS で本文を描画するページからは本文を取れない。** その場合は RSS の description
+  （150 文字程度）だけで要約する。sitemap 型の情報源（RSS を出していないサイト向け）は
+  `llm-vendors` で Anthropic を拾うのに使っていた。今は使っていないがコードは残してある。
 - **利用モデルはアカウントのモデルアクセスに依存する。**
   検証に使った AWS アカウントでは Claude Opus 5 / Sonnet 5 / Opus 4.8 は
   `AccessDeniedException`（モデルアクセス未有効）となり、Sonnet 4.6 / Haiku 4.5 /
@@ -320,12 +320,14 @@ src/awsnews/
   curator.py          Strands Agent による選別・要約とトークン集計
   modelspec.py        モデルごとの方言（思考モードの指定フィールド）の吸収
   models.py           Article / Curation のスキーマ。Curation は structured output の定義でもある
-  store.py            既読管理とサイト用の記事の保管（SQLite）
+  store.py            既読管理とサイト用の記事の保管（SQLite / DynamoDB）
   site.py             ニュースサイト（1 枚の HTML）の組み立て
-  console.py          採点結果の標準出力表示
-  dashboard.py        共有用ダッシュボード（HTML）の組み立て
-  cli.py              収集 → 選別 → 保管 → サイト生成のつなぎ
-  handler.py          Lambda の入口（DynamoDB 版の台帳を使い、S3 に置く）
+  console.py          要約の結果の標準出力表示
+  cli.py              収集 → 要約 → 保管 → サイト生成のつなぎ
+  handler.py          Lambda の入口（DynamoDB 版の台帳を使い、Slack に通知し、S3 に置く）
+  notify.py           通知するサービスの設定と Slack への送信
+  api.py              サイトの /api/* の受け口（検証の承認・一覧・記録、通知設定）
+  verify.py           検証の依頼（aws-news-verify-requests）の読み書き
   publish.py          サイトを S3 に置く
 infra/                CDK（Python）。Lambda / DynamoDB / S3 / CloudFront / Scheduler
 Dockerfile            Lambda 用のコンテナイメージ

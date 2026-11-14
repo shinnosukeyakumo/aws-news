@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
@@ -37,12 +35,8 @@ class Article(BaseModel):
         )
 
 
-# 記事の種類。サイトのタブになる。定義文は config/sources.yaml の categories にある。
-Category = Literal["impl", "aws", "case", "trend", "model"]
-
-
 class Curation(BaseModel):
-    """1 記事に対するキュレーター（エージェント）の判断と要約。
+    """1 記事に対するエージェントの要約。
 
     Strands の structured_output_model にそのまま渡す。
     フィールドの説明文がそのままスキーマとしてモデルに届くため、
@@ -58,34 +52,22 @@ class Curation(BaseModel):
         description=(
             "何が発表・報告されたかを日本語で書く。2 文以内、120 文字以内。"
             "記事に書かれていないことは書かない。"
-            "本文が不足していて判断しきれない場合も、その但し書きはここではなく reason に書く。"
         ),
     )
     impact: str = Field(
         max_length=140,
         description=(
-            "読者の実装や技術判断に何が効くかを日本語 1 文で書く。80 文字以内。"
+            "開発者にとって何が変わるかを日本語 1 文で書く。80 文字以内。"
             "「試す価値がある」のような一般論ではなく、"
-            "何を変える必要があるか・何が作れるようになったかを具体的に書く。"
+            "何ができるようになったか・何を変える必要があるかを具体的に書く。"
         ),
-    )
-    score: int = Field(
-        ge=0, le=100,
-        description="担当領域の読者にとっての重要度。0〜100。判断基準は system prompt の評価基準に従う。",
-    )
-    reason: str = Field(
-        max_length=120,
-        description=(
-            "そのスコアを付けた理由。日本語 1 文、60 文字以内。"
-            "本文が不足していて判断しきれなかった場合はここに書く。"
-        ),
-    )
-    category: Category = Field(
-        description="記事の種類。system prompt の Category の定義から最も当てはまる key を 1 つ選ぶ。",
     )
     tags: list[str] = Field(
         default_factory=list,
-        description="関連する製品名・技術名のタグ。最大 3 個。例: Bedrock AgentCore, Strands Agents, Nova",
+        description=(
+            "記事の主題になっている AWS のサービス名。正式名で最大 3 個。"
+            "例: Amazon EC2, AWS Lambda, Amazon Bedrock AgentCore。通知の要否はこの名前で決まる。"
+        ),
     )
 
 

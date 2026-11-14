@@ -1,7 +1,9 @@
 """aws-news のスタック。
 
 EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 ← CloudFront（Basic 認証）
-「検証する」ボタン → CloudFront /api/* → Lambda（Function URL）→ DynamoDB verify-requests
+サイトの /api/*（「検証する」・検証の記録と下書き・通知設定）
+  → CloudFront → Lambda（Function URL）→ DynamoDB articles の設定項目 / verify-requests
+通知するサービスの新着 → Slack（Incoming Webhook。URL は Secrets Manager）
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_scheduler as scheduler,
     aws_scheduler_targets as targets,
+    aws_secretsmanager as secretsmanager,
 )
 from aws_cdk import CfnOutput
 from constructs import Construct
@@ -51,7 +54,7 @@ class AwsNewsStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # 既読と採点結果。消すと全記事を採点し直すことになるので、スタックを消しても残す
+        # 既読と要約。消すと全記事を要約し直すことになるので、スタックを消しても残す
         table = dynamodb.Table(
             self, "Articles",
             partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
@@ -103,7 +106,7 @@ class AwsNewsStack(Stack):
         verify_fn = lambda_.DockerImageFunction(
             self, "VerifyApi",
             code=lambda_.DockerImageCode.from_image_asset(
-                **image_code, cmd=["awsnews.verify.handler"]),
+                **image_code, cmd=["awsnews.api.handler"]),
             architecture=lambda_.Architecture.ARM_64,
             memory_size=256,
             timeout=Duration.seconds(10),
@@ -117,8 +120,13 @@ class AwsNewsStack(Stack):
         )
         verify_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:GetItem"], resources=[table.table_arn]))
+        # 通知設定の保存。articles に書けるのは pk="#settings" の項目だけにする
         verify_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:PutItem"], resources=[verify_table.table_arn]))
+            actions=["dynamodb:PutItem"], resources=[table.table_arn],
+            conditions={"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["#settings"]}}))
+        verify_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Scan"],
+            resources=[verify_table.table_arn]))
         # Function URL は IAM 認証にして、CloudFront（OAC）からしか呼べないようにする
         verify_url = verify_fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
 
@@ -157,6 +165,14 @@ class AwsNewsStack(Stack):
             http_version=cloudfront.HttpVersion.HTTP2_AND_3,
         )
 
+        # Slack の Incoming Webhook の URL。作った直後はランダムな値が入っているので、
+        # put-secret-value で URL に差し替える。差し替えるまで通知は送らない
+        slack_secret = secretsmanager.Secret(
+            self, "SlackWebhook",
+            secret_name="aws-news/slack-webhook",
+            description="aws-news の通知先（Slack Incoming Webhook の URL）",
+        )
+
         fn = lambda_.DockerImageFunction(
             self, "Curator",
             code=lambda_.DockerImageCode.from_image_asset(**image_code),
@@ -166,7 +182,9 @@ class AwsNewsStack(Stack):
             # 自動で再実行すると Bedrock の呼び出しが二重になる。失敗したら次の定期実行に任せる
             retry_attempts=0,
             environment={"TABLE_NAME": table.table_name, "BUCKET_NAME": bucket.bucket_name,
-                         "VERIFY_TABLE_NAME": verify_table.table_name},
+                         "VERIFY_TABLE_NAME": verify_table.table_name,
+                         "SLACK_SECRET_ID": slack_secret.secret_name,
+                         "SITE_URL": f"https://{distribution.distribution_domain_name}/"},
             log_group=logs.LogGroup(
                 self, "CuratorLogs",
                 retention=logs.RetentionDays.ONE_MONTH,
@@ -180,6 +198,7 @@ class AwsNewsStack(Stack):
             resources=[table.table_arn, f"{table.table_arn}/index/by-date"],
         ))
         bucket.grant_put(fn)
+        slack_secret.grant_read(fn)
         fn.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:Scan"], resources=[verify_table.table_arn]))
         model_arns: list[str] = []
@@ -205,3 +224,4 @@ class AwsNewsStack(Stack):
         CfnOutput(self, "FunctionName", value=fn.function_name)
         CfnOutput(self, "VerifyTableName", value=verify_table.table_name)
         CfnOutput(self, "VerifyStatusIndex", value="by-status")
+        CfnOutput(self, "SlackSecretName", value=slack_secret.secret_name)

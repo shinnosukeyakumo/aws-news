@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import json
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
@@ -12,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import console, dashboard, site
+from . import console, site
 from .collect import collect, since_datetime
 from .config import AgentConfig, SiteConfig, load_agents, load_site
 from .curator import Curator
@@ -52,47 +51,45 @@ def run_agent(config: AgentConfig, store: Store, site_config: SiteConfig, *,
         logger.info("[%s] 新着なし", config.key)
         return []
 
-    logger.info("[%s] %d 件を評価する", config.key, len(articles))
+    logger.info("[%s] %d 件を要約する", config.key, len(articles))
     curator = Curator(config)
     curated = curator.curate(articles)
     for item in curated:
         item.curation.tags = site_config.normalize_tags(item.curation.tags)
     if sink is not None:
-        sink.extend(curated)   # 閾値未満で見送った分もサイトとダッシュボードには残す
-    to_show = [c for c in curated if c.curation.score >= config.min_score]
-    print(console.render_console(config, curated, config.min_score))
+        sink.extend(curated)
+    print(console.render_console(config, curated))
 
     if record:
         for item in curated:
-            store.mark(config.key, item.article.url, item.article.title,
-                       item.curation.score, item.curation.score >= config.min_score)
+            store.mark(config.key, item.article.url, item.article.title, True)
             store.save(item)
-        # 評価に失敗した記事も記録し、次回に再挑戦させない（無限リトライ防止）
+        # 要約に失敗した記事も記録し、次回に再挑戦させない（無限リトライ防止）
         curated_urls = {c.article.url for c in curated}
         for article in articles:
             if article.url not in curated_urls:
-                store.mark(config.key, article.url, article.title, None, False)
+                store.mark(config.key, article.url, article.title, False)
 
     usage = curator.usage
     logger.info(
-        "[%s] 評価 %d 件 / 掲載 %d 件 / トークン in=%d out=%d (%s)",
-        config.key, len(curated), len(to_show),
+        "[%s] 要約 %d 件 / 失敗 %d 件 / トークン in=%d out=%d (%s)",
+        config.key, len(curated), len(articles) - len(curated),
         usage.input_tokens, usage.output_tokens, config.model_id,
     )
-    return to_show
+    return curated
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="awsnews",
-        description="AWS / LLM ベンダーのニュースをエージェントが選別・要約し、ニュースサイトを作る",
+        description="AWS のニュースをエージェントが要約し、ニュースサイトを作る",
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="エージェント定義 YAML")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="既読管理 DB")
     parser.add_argument("--agent", action="append", dest="agents",
                         help="対象エージェントの key（複数指定可。既定は全部）")
     parser.add_argument("--limit", type=int, default=None,
-                        help="1 エージェントあたりの評価件数の上限（既定は設定ファイルの値）")
+                        help="1 エージェントあたりの要約件数の上限（既定は設定ファイルの値）")
     parser.add_argument("--no-store", action="store_true",
                         help="既読を記録しない（同じ記事で繰り返し試すとき用）")
     parser.add_argument("--stats", action="store_true", help="既読 DB の統計だけ表示して終わる")
@@ -101,20 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reasoning", choices=["off", "low", "medium", "high"],
                         help="思考モードを上書きする")
     parser.add_argument("--temperature", type=float, help="temperature を上書きする")
-    parser.add_argument("--min-score", type=int, dest="min_score",
-                        help="掲載の閾値を上書きする")
-    parser.add_argument("--export", type=Path, metavar="PATH",
-                        help="選別結果を JSON に書き出す（ダッシュボード生成用）")
     parser.add_argument("--days", type=int, dest="backfill_days",
                         help="遡る日数を上書きする（週次まとめなら 7）")
-    parser.add_argument("--dashboard", type=Path, metavar="PATH",
-                        help="共有用ダッシュボードの HTML を書き出す")
-    parser.add_argument("--for-artifact", action="store_true",
-                        help="--dashboard の出力から DOCTYPE / html / head / body を省く")
     parser.add_argument("--site", type=Path, metavar="PATH",
                         help="保管した直近の記事からニュースサイトの HTML を書き出す")
     parser.add_argument("--site-only", action="store_true",
-                        help="収集と採点をせず、保管済みの記事だけで --site を作り直す")
+                        help="収集と要約をせず、保管済みの記事だけで --site を作り直す")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -128,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
 
     store = SeenStore(args.db)
     if args.stats:
-        print(f"{'エージェント':<16}{'処理済み':>8}{'掲載':>8}")
+        print(f"{'エージェント':<16}{'処理済み':>8}{'要約済み':>8}")
         for key, total, notified in store.stats():
             print(f"{key:<16}{total:>8}{notified or 0:>8}")
         return 0
@@ -146,7 +135,6 @@ def main(argv: list[str] | None = None) -> int:
             ("model_id", args.model),
             ("reasoning_effort", args.reasoning),
             ("temperature", args.temperature),
-            ("min_score", args.min_score),
             ("backfill_days", args.backfill_days),
         ) if v is not None
     }
@@ -161,19 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         total += len(run_agent(config, store, site_config, limit=limit,
                                record=not args.no_store, sink=collected))
 
-    if args.export or args.dashboard:
-        export_path = args.export or (args.dashboard.with_suffix(".json"))
-        _export(export_path, agents, collected)
-        logger.info("%s に %d 件を書き出した", export_path, len(collected))
-        if args.dashboard:
-            dashboard.build(export_path, args.dashboard,
-                            for_artifact=args.for_artifact)
-            logger.info("%s にダッシュボードを生成した", args.dashboard)
-
     if args.site:
         _build_site(args.site, site_config, store, collected)
 
-    logger.info("完了。掲載 %d 件。", total)
+    logger.info("完了。要約 %d 件。", total)
     return 0
 
 
@@ -181,7 +160,7 @@ def _build_site(path: Path, site_config: SiteConfig, store: Store,
                 extra: list[CuratedArticle]) -> None:
     """保管済みの直近の記事に今回の分を重ねてサイトを書き出す。
 
-    --no-store で試したときも、今回採点した記事が画面に出るようにするため。
+    --no-store で試したときも、今回要約した記事が画面に出るようにするため。
     """
     since = datetime.now(timezone.utc) - timedelta(days=site_config.days)
     merged = {(r["agent_key"], r["url"]): r for r in store.recent(since)}
@@ -189,46 +168,6 @@ def _build_site(path: Path, site_config: SiteConfig, store: Store,
         merged[(item.agent_key, item.article.url)] = to_record(item)
     site.build(list(merged.values()), site_config, path)
     logger.info("%s にサイトを書き出した（%d 件）", path, len(merged))
-
-
-def _export(path: Path, agents: list[AgentConfig], items: list[CuratedArticle]) -> None:
-    """ダッシュボード生成に必要なものだけを JSON にまとめる。
-
-    閾値未満で見送った記事も残す。ダッシュボード側で
-    「なぜ載っていないか」を示せるようにするため。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "agents": [
-            {
-                "key": a.key, "name": a.name, "emoji": a.emoji,
-                "color": f"#{a.color:06x}", "model_id": a.model_id,
-                "min_score": a.min_score,
-            }
-            for a in agents
-        ],
-        "articles": [
-            {
-                "agent_key": i.agent_key,
-                "url": i.article.url,
-                "title_original": i.article.title,
-                "source_label": i.article.source_label,
-                "published_at": (
-                    i.article.published_at.isoformat() if i.article.published_at else None
-                ),
-                "title_ja": i.curation.title_ja,
-                "summary": i.curation.summary,
-                "impact": i.curation.impact,
-                "score": i.curation.score,
-                "reason": i.curation.reason,
-                "tags": i.curation.tags,
-                "category": i.curation.category,
-            }
-            for i in sorted(items, key=lambda x: x.curation.score, reverse=True)
-        ],
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
