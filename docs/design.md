@@ -306,7 +306,7 @@ CDK を Python にするのは、アプリ本体と言語を揃えるため。
 | CloudFront ディストリビューション | OAC、HTTPS リダイレクト、CloudFront Functions（viewer-request） |
 | CloudFront KeyValueStore | Basic 認証の正解値 |
 | Lambda 関数 | コンテナイメージ、arm64、1024 MB、15 分 |
-| EventBridge Scheduler | 1 日 2 回、`Asia/Tokyo` |
+| EventBridge Scheduler | 1 日 2 回、`Asia/Tokyo`。re:Invent の前後だけ、0・3・6・12・15・21 時を足して 3 時間おき（期間は `infra/stack.py` の `REINVENT_START` / `REINVENT_END`。毎年書き換える） |
 | IAM ロール（Lambda 用） | 下記の最小権限 |
 
 Lambda に渡す権限

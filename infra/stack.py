@@ -8,6 +8,7 @@ EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -40,6 +41,13 @@ PROFILE_REGIONS = {
     "apac": ["ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
              "ap-south-1", "ap-southeast-1", "ap-southeast-2"],
 }
+
+# re:Invent の前後は What's New が 1 日 100 件を超え、フィードに載る約 100 件から
+# 古い記事が押し出される。この期間だけ実行を 3 時間おきに詰める。毎年ここを書き換える。
+# 2026 年の会期は 11/30〜12/4（ラスベガス）。事前発表が続く前の 2 週間から含める
+JST = timezone(timedelta(hours=9))
+REINVENT_START = datetime(2026, 11, 16, tzinfo=JST)
+REINVENT_END = datetime(2026, 12, 7, tzinfo=JST)
 
 
 def _model_ids() -> set[str]:
@@ -217,6 +225,16 @@ class AwsNewsStack(Stack):
                 minute="0", hour="9,18", time_zone=TimeZone.ASIA_TOKYO),
             target=targets.LambdaInvoke(fn, retry_attempts=0),
             description="aws-news を 9:00 と 18:00（JST）に実行する",
+        )
+        # 上の 9 時・18 時と重ならない時刻にする。重なると同じ記事を二重に要約する
+        scheduler.Schedule(
+            self, "ReInventWeeks",
+            schedule=scheduler.ScheduleExpression.cron(
+                minute="0", hour="0,3,6,12,15,21", time_zone=TimeZone.ASIA_TOKYO),
+            target=targets.LambdaInvoke(fn, retry_attempts=0),
+            start=REINVENT_START,
+            end=REINVENT_END,
+            description="re:Invent の前後だけ、aws-news を 3 時間おきに実行する",
         )
 
         CfnOutput(self, "SiteUrl", value=f"https://{distribution.distribution_domain_name}/")
