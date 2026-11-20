@@ -5,8 +5,8 @@ Discord への配信をやめ、選別・要約した記事をスマホで読め
 
 状態: 実装済み。2026-11-03 に ap-northeast-1 へデプロイし、手動実行でサイトの生成と Basic 認証を確認した。
 
-2026-11-14 に作り直した（点数をやめ、Slack 通知と検証の画面を足した）。下の「点数をやめ、通知と検証を一画面に（2026-11-14）」が今の形で、
-それより前に書いた点数・種類のタブ・`min_score` の話は経緯として残している。
+2026-11-21 に画面を作り直し、検証の機能を外した。下の「ニュースだけにし、マイライブラリを足す（2026-11-21）」が今の形だ。
+2026-11-14 の「点数をやめ、通知と検証を一画面に」と、それより前の点数・種類のタブ・`min_score` の話は経緯として残している。
 
 ## 目的と前提
 
@@ -209,42 +209,41 @@ HTML は Lambda 側で完成させてから置く（サーバー側で組み立�
 ブラウザ側で JSON を読んで描画する方式より、スマホでの表示が速く、仕組みも単純になる。
 タブとタグの絞り込みは、ページに埋め込んだ記事データを JavaScript で切り替える。
 
-## 検証の依頼（2026-11-14 追加）
+## ニュースだけにし、マイライブラリを足す（2026-11-21）
 
-カードの「検証する」で記事を承認し、agentcore-playground が AWS Emulator で検証して Qiita の下書きまで作る。
-playground 側の設計は `~/aws-demo/03-projects/research/agentcore-playground/docs/design-verify-pipeline.md`。
+agentcore-playground に検証を頼む機能（「検証する」ボタン、「検証」タブ、`/api/verify`、テーブル `aws-news-verify-requests`）を外した。
+aws-news はニュースを読むことだけに絞る。テーブルは RETAIN だったので、スタックから外しても AWS 上には残る（消すかは別に決める）。
 
-```
-カードの「検証する」 → POST /api/verify {pk, sk}
-  → CloudFront（Basic 認証）→ OAC → Lambda（Function URL、IAM 認証）
-       articles から記事を読み、verify-requests に status=approved で書く（attribute_not_exists(id)）
-agentcore-playground（Mac） → by-status で approved を拾い、picked → done / needs-real / failed と書き戻す
-Curator（定期実行） → verify-requests を Scan し、カードに状態を出す
-サイトを開いたとき → GET /api/verify で状態を取り直し、「検証」タブで記録と下書きを GET /api/verify/{id} で読む
-```
+画面は、ニュースを素早くふるい分けて、気になったものを手元に残す形にした。
 
-テーブル `aws-news-verify-requests`（オンデマンド、PITR、スタックを消しても残す）
+- **カテゴリ（18 分類）で切る。** 要約のときにモデルが `category` を 1 つ付ける（先頭のタグのサービスのカテゴリ）。持たない古い記事は `categories.guess` がタグの正規表現から当てる
+- **注目度（`importance`、1〜3）を付ける。** 点数をやめた理由（Nova が境界に張り付く）があるので、3 段階に留め、控えめに付けさせる。expansion と howto は原則 1。一覧は注目度順にも並べ替えられ、絞り込みで「★2 以上」のように使う
+- **国内リージョン（`jp_regions`）を付ける。** 東京・大阪で使えるかを本文の記述から判断する。記述が無ければ `unknown`。カードには東京で使えるときだけ印を出す
+- **期間は日本時間の暦で切る。** 今週 / 先週 / 今月 / 先月 / すべて。週は月曜はじまり。掲載は直近 60 日（`site.days`）
+- **詳細は一覧の横に出す。** PC（1024px 以上）は右の欄、スマホは全画面。`j` / `k` で前後の記事に移る
+- **マイライブラリ。** お気に入り（カテゴリ `c:<key>` かサービス `s:<名前>`）、保存した記事、保存した絞り込み条件の 3 つ。お気に入りはカテゴリのタブの先頭に出る。保存した記事は要約ごと写して持つので、掲載期間を過ぎても読める
 
-| 属性 | 中身 |
-|---|---|
-| `id`（パーティションキー） | 記事 URL の SHA-256 先頭 16 桁 |
-| `url` / `title_ja` / `title_original` / `source_label` / `tags` / `summary` | articles から写す |
-| `status` | `approved`（ボタン）→ `picked` → `done` / `needs-real` / `failed`（playground） |
-| `approved_at` / `picked_at` / `done_at` | ISO 8601 |
-| `exp` / `message` | playground が書く |
-| `result` | `PASS` / `FAIL` / `UNSUPPORTED` / `ERROR`。playground が書く（2026-11-14 追加）。`UNSUPPORTED` は Emulator が 501 を返して確かめられなかったもの |
-| `note_md` | 検証の記録（Markdown）。playground が書く（同上）。DynamoDB の 1 項目は 400KB が上限なので、playground が `note_md` と `draft_md` を合わせて 350KB までに収める。超えたら記録のログ部分を切り詰め、末尾に全文の置き場（playground の `exp/<feature>/NOTE.md`）を書く。サイトでは途中で切れた記録がそのまま出る |
-| `draft_md` / `has_draft` | ブログの下書き（Markdown）と、その有無。一覧に本文を載せずに「下書きあり」を出すため `has_draft` を分ける（同上） |
+マイライブラリは localStorage に持ち、AWS 上のサイトでは `/api/library` にも丸ごと置く。
+articles テーブルの `pk="#settings", sk="library"` の 1 項目で、使うのは自分 1 人なので項目ごとの結合はせず、
+`updated_at` が新しい方で上書きする。端末で変えたまま送れていない分（`dirty`）があり、それがサーバーより新しければ端末側を送る。
+1 項目 400KB の上限に収めるため、保存した記事は 500 件、お気に入りは 50、条件は 30 までにしている。
 
-GSI `by-status`（パーティションキー `status`、ソートキー `approved_at`）。テーブル名と GSI 名は CDK の出力 `VerifyTableName` / `VerifyStatusIndex` にも出す。
+古い記事の埋め戻しは、Curator の Lambda に `{"recurate_days": N, "limit": M}` を渡して手で回す。
+`importance` を持たない記事だけを、記事ページを取り直して要約し直す。同じ記事を二度やらないので、`targets` が 0 になるまで繰り返せばよい。
 
-- 受け口の Lambda は Curator と同じイメージを使い、入口（CMD）だけ `awsnews.api.handler` に替える。ビルドは 1 回で済む
-- OAC 経由で Lambda に POST するときは、本文の SHA-256 を `x-amz-content-sha256` ヘッダーで送る決まりがある。ページの JS が計算して付ける
-- ボタンは押す前に確認を出す。押したあとはその場で「承認済み」に変わる。その先の状態は、ページを開き直したときに /api/verify から取り直す
-- ボタンは AWS 上のサイトにだけ出す。ローカルで `--site` を使って書き出すページには出さない
-- 同じ日に、セッションマップ向けに入れていた `articles.json` の CORS を外した
+受け口（`awsnews.api.handler`、`/api/*`）
 
-## 点数をやめ、通知と検証を一画面に（2026-11-14）
+| メソッドとパス | 中身 | 権限 |
+|---|---|---|
+| `GET /api/library` | マイライブラリ | articles の GetItem |
+| `POST /api/library` | マイライブラリを丸ごと置き換える | articles の PutItem |
+| `GET /api/settings` | 通知するサービスと種類 | articles の GetItem |
+| `POST /api/settings` | 通知するサービスと種類を置き換える | articles の PutItem |
+
+権限はどれも `dynamodb:LeadingKeys` で `#settings` に限る。受け口の Lambda は Curator と同じイメージで、入口（CMD）だけ替える。
+OAC 経由で Lambda に POST するときは、本文の SHA-256 を `x-amz-content-sha256` ヘッダーで送る決まりがある。ページの JS が計算して付ける。
+
+## 点数をやめ、通知と検証を一画面に（2026-11-14、検証は 2026-11-21 に外した）
 
 点数を付けても、Nova は帯の境界に張り付いて判別が粗く、結局は全部の見出しに目を通していた。
 そこで点数付けをやめ、全部を一覧に出したうえで「どのサービスの記事を手元に届けるか」を自分で選ぶ形にした。

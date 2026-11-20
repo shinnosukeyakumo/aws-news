@@ -34,6 +34,9 @@ MUST: impact には「読者の実装や技術判断に何が効くか」を具�
 MUST: tags には記事の主題になっている AWS のサービスを正式名で挙げよ。
 MUST: kind はリージョンやインスタンスサイズの追加だけなら expansion にせよ。新しい機能と取り違えるな。
 MUST: ブログ記事は、新しいサービスや機能をその記事で初めて発表しているのでなければ howto にせよ。既存の機能の使い方・構成例・事例・コスト最適化の話は howto だ。
+MUST: category は tags の先頭のサービスのカテゴリにせよ。
+MUST: importance は控えめに付けよ。3 は週に数件しか無い大きな発表だけだ。expansion と howto は原則 1 にせよ。
+MUST: jp_regions は本文にリージョンの記述があるときだけ判断し、記述が無ければ unknown にせよ。
 DO NOT USE INFORMATION THAT IS NOT IN THE DOCUMENT ABOVE!"""
 
 

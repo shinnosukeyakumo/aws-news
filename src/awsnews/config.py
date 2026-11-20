@@ -78,18 +78,11 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
-class WatchConfig:
-    name: str
-    pattern: str
-
-
-@dataclass(frozen=True)
 class SiteConfig:
     """ニュースサイトの表示に関わる設定。要約には効かない。"""
 
     title: str
     days: int
-    watch: tuple[WatchConfig, ...]
     # 通知の設定がまだ無いときに通知するサービス
     notify_default: tuple[str, ...] = ()
     # 同じく、通知する記事の種類（Curation.kind の値）
@@ -113,7 +106,6 @@ def load_site(path: Path) -> SiteConfig:
     return SiteConfig(
         title=site.get("title", "aws-news"),
         days=int(site.get("days", 30)),
-        watch=tuple(WatchConfig(w["name"], w["pattern"]) for w in site.get("watch", [])),
         notify_default=tuple(site.get("notify_default") or ()),
         notify_kinds_default=tuple(site.get("notify_kinds_default") or ("new_service", "feature")),
         tag_aliases=aliases,

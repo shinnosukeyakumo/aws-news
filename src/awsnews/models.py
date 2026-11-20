@@ -85,6 +85,46 @@ class Curation(BaseModel):
     generative_ai: bool = Field(
         description="生成 AI、LLM、AI エージェントに関わる記事なら true。それ以外は false。",
     )
+    category: Literal[
+        "ai_ml", "compute", "containers", "storage", "database", "network", "security",
+        "management", "developer", "analytics", "integration", "migration", "end_user",
+        "business", "cost", "media", "iot", "other",
+    ] = Field(
+        description=(
+            "tags の先頭のサービスが属する AWS の製品カテゴリを 1 つ選ぶ。"
+            "ai_ml: Bedrock, AgentCore, SageMaker, Nova, Amazon Q, Kiro, Trainium など。"
+            "compute: EC2, Lambda, Batch, Outposts, Local Zones。containers: ECS, EKS, Fargate, ECR。"
+            "storage: S3, EBS, EFS, FSx, Backup。database: RDS, Aurora, DynamoDB, ElastiCache, Redshift。"
+            "network: VPC, CloudFront, Route 53, Direct Connect, Transit Gateway, ELB, API Gateway。"
+            "security: IAM, Cognito, GuardDuty, KMS, Secrets Manager, WAF, Security Hub。"
+            "management: CloudWatch, CloudFormation, CloudTrail, Config, Systems Manager, Organizations。"
+            "developer: CodeBuild, CodePipeline, CDK, CLI, SDK, Amplify。"
+            "analytics: Athena, Glue, EMR, Kinesis, MSK, OpenSearch, QuickSight。"
+            "integration: SQS, SNS, EventBridge, Step Functions。migration: DMS, Application Migration Service。"
+            "end_user: WorkSpaces, AppStream。business: Amazon Connect, Marketplace, SES。"
+            "cost: Cost Explorer, Billing, Budgets。media: Elemental, IVS。iot: IoT Core, Greengrass。"
+            "other: どれにも当たらないもの。"
+        ),
+    )
+    importance: int = Field(
+        ge=1, le=3,
+        description=(
+            "AWS で開発するエンジニア全体にとっての注目度を 1〜3 で付ける。"
+            "3: 新サービス、主要サービスの大きな機能、多くの構成に効く変更。"
+            "2: そのサービスの利用者には役立つ機能の追加。"
+            "1: リージョン・インスタンスタイプ・バージョンの追加、小さな改善、事例紹介。"
+        ),
+    )
+    jp_regions: Literal["tokyo_osaka", "tokyo", "osaka", "none", "unknown"] = Field(
+        description=(
+            "日本のリージョンで使えるかを記事の記述だけから判断する。"
+            "tokyo_osaka: 東京（ap-northeast-1）と大阪（ap-northeast-3）の両方、"
+            "または「すべての商用リージョン」で使える。"
+            "tokyo: 東京は挙がっているが大阪は無い。osaka: 大阪だけ。"
+            "none: 使えるリージョンが列挙されていて、日本のリージョンが含まれない。"
+            "unknown: リージョンの記述が無い。推測で埋めるな。"
+        ),
+    )
 
 
 class CuratedArticle(BaseModel):

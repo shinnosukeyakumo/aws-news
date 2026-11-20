@@ -22,7 +22,7 @@ defaults:
 site:
   title: AWS News
   # トップに並べる期間（公開日基準）
-  days: 30
+  days: 60
   # 通知するサービスの初期値。サイトの「通知設定」で保存すると、そちら（DynamoDB）が優先される。
   # 名前は tag_aliases で揃えたあとの正式名で書く。
   notify_default:
@@ -38,15 +38,6 @@ site:
   notify_kinds_default:
     - new_service
     - feature
-  # ウォッチ: タブを問わず、タグか題名に当たった記事を見出しで並べる。
-  # pattern は正規表現（大文字小文字は区別しない）。
-  watch:
-    - name: AgentCore
-      pattern: AgentCore
-    - name: Bedrock
-      pattern: "Bedrock(?! AgentCore)"   # 「Amazon Bedrock AgentCore」を Bedrock に数えない
-    - name: Strands
-      pattern: Strands
   # サービス名の表記揺れを要約のあとに揃える。正式名: [別名, ...]
   tag_aliases:
     Amazon Bedrock: [AWS Bedrock, Bedrock]

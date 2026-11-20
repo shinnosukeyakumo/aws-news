@@ -1,8 +1,8 @@
 """aws-news のスタック。
 
 EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 ← CloudFront（Basic 認証）
-サイトの /api/*（「検証する」・検証の記録と下書き・通知設定）
-  → CloudFront → Lambda（Function URL）→ DynamoDB articles の設定項目 / verify-requests
+サイトの /api/*（マイライブラリ・通知設定）
+  → CloudFront → Lambda（Function URL）→ DynamoDB articles の設定項目（pk="#settings"）
 通知するサービスの新着 → Slack（Incoming Webhook。URL は Secrets Manager）
 """
 
@@ -88,55 +88,35 @@ class AwsNewsStack(Stack):
             auto_delete_objects=True,
         )
 
-        # 「検証する」で承認した記事。agentcore-playground が拾って状態を書き戻す。
-        # 承認の履歴なので、スタックを消しても残す
-        verify_table = dynamodb.Table(
-            self, "VerifyRequests",
-            table_name="aws-news-verify-requests",   # playground 側から名前で引くので固定する
-            partition_key=dynamodb.Attribute(name="id", type=dynamodb.AttributeType.STRING),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
-                point_in_time_recovery_enabled=True),
-            removal_policy=RemovalPolicy.RETAIN,
-        )
-        verify_table.add_global_secondary_index(
-            index_name="by-status",
-            partition_key=dynamodb.Attribute(name="status", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="approved_at", type=dynamodb.AttributeType.STRING),
-        )
-
         # 受け口は Curator と同じイメージを使い、入口だけ替える。ビルドは 1 回で済む
         image_code = dict(
             directory=str(ROOT),
             platform=ecr_assets.Platform.LINUX_ARM64,
             exclude=[".venv", "data", "infra", "docs", ".git", ".omni", "**/__pycache__"],
         )
-        verify_fn = lambda_.DockerImageFunction(
-            self, "VerifyApi",
+        api_fn = lambda_.DockerImageFunction(
+            self, "Api",
             code=lambda_.DockerImageCode.from_image_asset(
                 **image_code, cmd=["awsnews.api.handler"]),
             architecture=lambda_.Architecture.ARM_64,
             memory_size=256,
             timeout=Duration.seconds(10),
-            environment={"TABLE_NAME": table.table_name,
-                         "VERIFY_TABLE_NAME": verify_table.table_name},
+            environment={"TABLE_NAME": table.table_name},
             log_group=logs.LogGroup(
-                self, "VerifyApiLogs",
+                self, "ApiLogs",
                 retention=logs.RetentionDays.ONE_MONTH,
                 removal_policy=RemovalPolicy.DESTROY,
             ),
         )
-        verify_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:GetItem"], resources=[table.table_arn]))
-        # 通知設定の保存。articles に書けるのは pk="#settings" の項目だけにする
-        verify_fn.add_to_role_policy(iam.PolicyStatement(
+        # 通知設定とライブラリ。articles に触れるのは pk="#settings" の項目だけにする
+        api_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:GetItem"], resources=[table.table_arn],
+            conditions={"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["#settings"]}}))
+        api_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["dynamodb:PutItem"], resources=[table.table_arn],
             conditions={"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["#settings"]}}))
-        verify_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Scan"],
-            resources=[verify_table.table_arn]))
         # Function URL は IAM 認証にして、CloudFront（OAC）からしか呼べないようにする
-        verify_url = verify_fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
+        api_url = api_fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
 
         auth_store = cloudfront.KeyValueStore(self, "AuthStore")
         auth_fn = cloudfront.Function(
@@ -157,10 +137,10 @@ class AwsNewsStack(Stack):
                     function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
             ),
             additional_behaviors={
-                # 「検証する」の POST。サイトと同じ Basic 認証を通してから Lambda に渡す。
+                # ライブラリと通知設定の読み書き。サイトと同じ Basic 認証を通してから Lambda に渡す。
                 # Authorization は OAC の署名で上書きされるので、Lambda には届かない
                 "/api/*": cloudfront.BehaviorOptions(
-                    origin=origins.FunctionUrlOrigin.with_origin_access_control(verify_url),
+                    origin=origins.FunctionUrlOrigin.with_origin_access_control(api_url),
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
                     allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
@@ -190,7 +170,6 @@ class AwsNewsStack(Stack):
             # 自動で再実行すると Bedrock の呼び出しが二重になる。失敗したら次の定期実行に任せる
             retry_attempts=0,
             environment={"TABLE_NAME": table.table_name, "BUCKET_NAME": bucket.bucket_name,
-                         "VERIFY_TABLE_NAME": verify_table.table_name,
                          "SLACK_SECRET_ID": slack_secret.secret_name,
                          "SITE_URL": f"https://{distribution.distribution_domain_name}/"},
             log_group=logs.LogGroup(
@@ -207,8 +186,6 @@ class AwsNewsStack(Stack):
         ))
         bucket.grant_put(fn)
         slack_secret.grant_read(fn)
-        fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["dynamodb:Scan"], resources=[verify_table.table_arn]))
         model_arns: list[str] = []
         for model_id in sorted(_model_ids()):
             prefix, _, base = model_id.partition(".")
@@ -240,6 +217,4 @@ class AwsNewsStack(Stack):
         CfnOutput(self, "SiteUrl", value=f"https://{distribution.distribution_domain_name}/")
         CfnOutput(self, "AuthStoreArn", value=auth_store.key_value_store_arn)
         CfnOutput(self, "FunctionName", value=fn.function_name)
-        CfnOutput(self, "VerifyTableName", value=verify_table.table_name)
-        CfnOutput(self, "VerifyStatusIndex", value="by-status")
         CfnOutput(self, "SlackSecretName", value=slack_secret.secret_name)
