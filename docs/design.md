@@ -328,7 +328,7 @@ CDK を Python にするのは、アプリ本体と言語を揃えるため。
 | S3 バケット | パブリックアクセス全ブロック、SSE-S3 |
 | CloudFront ディストリビューション | OAC、HTTPS リダイレクト（認証は 2026-11-21 に外した） |
 | Lambda 関数 | コンテナイメージ、arm64、1024 MB、15 分 |
-| EventBridge Scheduler | 1 日 2 回、`Asia/Tokyo`。re:Invent の前後だけ、0・3・6・12・15・21 時を足して 3 時間おき（期間は `infra/stack.py` の `REINVENT_START` / `REINVENT_END`。毎年書き換える） |
+| EventBridge Scheduler | 1 日 2 回、`Asia/Tokyo`。re:Invent の前後だけ、9 時・18 時以外の毎時を足して 1 時間おき（2026-11-21 に 3 時間おきから変更）（期間は `infra/stack.py` の `REINVENT_START` / `REINVENT_END`。毎年書き換える） |
 | IAM ロール（Lambda 用） | 下記の最小権限 |
 
 Lambda に渡す権限

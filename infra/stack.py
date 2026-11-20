@@ -43,7 +43,7 @@ PROFILE_REGIONS = {
 }
 
 # re:Invent の前後は What's New が 1 日 100 件を超え、フィードに載る約 100 件から
-# 古い記事が押し出される。この期間だけ実行を 3 時間おきに詰める。毎年ここを書き換える。
+# 古い記事が押し出される。この期間だけ実行を 1 時間おきに詰める（2026-11-21 に 3 時間おきから変更）。毎年ここを書き換える。
 # 2026 年の会期は 11/30〜12/4（ラスベガス）。事前発表が続く前の 2 週間から含める
 JST = timezone(timedelta(hours=9))
 REINVENT_START = datetime(2026, 11, 16, tzinfo=JST)
@@ -195,11 +195,12 @@ class AwsNewsStack(Stack):
         scheduler.Schedule(
             self, "ReInventWeeks",
             schedule=scheduler.ScheduleExpression.cron(
-                minute="0", hour="0,3,6,12,15,21", time_zone=TimeZone.ASIA_TOKYO),
+                minute="0", hour="0-8,10-17,19-23", time_zone=TimeZone.ASIA_TOKYO),
             target=targets.LambdaInvoke(fn, retry_attempts=0),
-            start=REINVENT_START,
+            # 開始日時が過去だと Scheduler が更新を拒む（5 分より前は不可）。期間中のデプロイでは少し先にずらす
+            start=max(REINVENT_START, datetime.now(JST) + timedelta(minutes=10)),
             end=REINVENT_END,
-            description="re:Invent の前後だけ、aws-news を 3 時間おきに実行する",
+            description="re:Invent の前後だけ、aws-news を 1 時間おきに実行する",
         )
 
         CfnOutput(self, "SiteUrl", value=f"https://{distribution.distribution_domain_name}/")

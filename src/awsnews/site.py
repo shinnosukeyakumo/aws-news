@@ -96,6 +96,7 @@ a{color:inherit}
 .hd-top h1{margin:0;font-size:19px;font-weight:800;letter-spacing:0;line-height:1.2}
 .upd{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sp{flex:1}
+.hbtn.rl{padding:5px 8px;font-size:15px;line-height:1}
 .hbtn{border:1px solid var(--rule);background:var(--panel);border-radius:8px;padding:5px 10px;font-size:13px;font-weight:600;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
 .hbtn:hover{border-color:var(--faint)}
 .hbtn .n{min-width:18px;height:18px;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:11px;font-weight:700;display:inline-grid;place-items:center;padding:0 5px}
@@ -243,7 +244,7 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
 <body>
 <header class="hd" id="hd"><div class="wrap">
   <div class="hd-top">
-    <h1>__TITLE__</h1><span class="upd" id="upd"></span><span class="sp"></span>
+    <h1>__TITLE__</h1><span class="upd" id="upd"></span><button class="hbtn rl" id="reloadbtn" title="最新の記事を読み直す（R）" aria-label="最新の記事を読み直す">↻</button><span class="sp"></span>
     <button class="hbtn" id="libbtn" title="マイライブラリ（L）">ライブラリ<span class="n" id="libn" hidden></span></button>
     <button class="hbtn" id="setbtn" hidden title="Slack 通知の設定">通知</button>
     <button class="hbtn" id="themebtn" title="表示テーマを切り替える"></button>
@@ -302,6 +303,7 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
     <tr><td><kbd>/</kbd></td><td>検索</td></tr>
     <tr><td><kbd>f</kbd></td><td>絞り込み</td></tr>
     <tr><td><kbd>l</kbd></td><td>マイライブラリ</td></tr>
+    <tr><td><kbd>r</kbd></td><td>最新の記事を読み直す</td></tr>
     <tr><td><kbd>Esc</kbd></td><td>閉じる</td></tr>
     <tr><td><kbd>?</kbd></td><td>この一覧</td></tr>
   </tbody></table></div>
@@ -370,6 +372,9 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
     $('#themebtn').textContent='テーマ: '+THEMES[theme];
   }
   applyTheme();
+  // ブラウザのキャッシュを避けるため、クエリを付けて開き直す。CloudFront 側は最大 60 秒前の版になりうる
+  const reload=()=>{const u=new URL(location.href); u.searchParams.set('r',Date.now()); location.replace(u.toString());};
+  $('#reloadbtn').addEventListener('click',reload);
   $('#themebtn').addEventListener('click',()=>{const k=Object.keys(THEMES); theme=k[(k.indexOf(theme)+1)%k.length]; LS.set('awsnews-theme',theme); applyTheme();});
 
   // ---- マイライブラリ（localStorage に持ち、AWS 上では /api/library と揃える） ----
@@ -733,6 +738,7 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
       case '/': e.preventDefault(); closeDrawer(); qEl.focus(); qEl.select(); break;
       case 'f': drawer==='fil'?closeDrawer():openDrawer('fil'); break;
       case 'l': drawer==='lib'?closeDrawer():openDrawer('lib'); break;
+      case 'r': reload(); break;
       case 's': if(a) toggleSave(a); break;
       case 'o': if(a) window.open(a.url,'_blank','noopener'); break;
       case 'Escape': if(drawer) closeDrawer(); else closeDetail(); break;
