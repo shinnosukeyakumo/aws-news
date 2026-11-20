@@ -341,12 +341,12 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
 
   // 期間は日本時間で区切る。週は月曜はじまり
   const H9=9*36e5, DAY=864e5;
-  const PERIODS=[['this_week','今週'],['last_week','先週'],['this_month','今月'],['last_month','先月'],['all','すべて']];
+  const PERIODS=[['today','今日'],['this_week','今週'],['last_week','先週'],['this_month','今月'],['last_month','先月'],['all','すべて']];
   function ranges(){
     const j=new Date(Date.now()+H9), y=j.getUTCFullYear(), m=j.getUTCMonth(), w=(j.getUTCDay()+6)%7;
     const today=Date.UTC(y,m,j.getUTCDate())-H9, week=today-w*DAY;
     const month=Date.UTC(y,m,1)-H9, prev=Date.UTC(y,m-1,1)-H9;
-    return {all:[-Infinity,Infinity],this_week:[week,Infinity],last_week:[week-7*DAY,week],this_month:[month,Infinity],last_month:[prev,month]};
+    return {all:[-Infinity,Infinity],today:[today,Infinity],this_week:[week,Infinity],last_week:[week-7*DAY,week],this_month:[month,Infinity],last_month:[prev,month]};
   }
   let R=ranges();
 
