@@ -15,7 +15,7 @@ AWS の新機能アナウンス（What's New）と AWS の AI ブログを、担
 
 AWS 上では東京リージョン（ap-northeast-1）で 1 日 2 回（9:00 / 18:00 JST）動き、
 re:Invent の前後（2026 年は 11/16〜12/6）だけは 3 時間おきに動く。
-CloudFront の Basic 認証の内側でサイトを配信する。設計は `docs/design.md`、CDK は `infra/` にある。
+CloudFront でサイトを配信する。認証は付けていない（2026-11-21 に Basic 認証を外した）。設計は `docs/design.md`、CDK は `infra/` にある。
 
 ## エージェント構成
 
@@ -79,7 +79,7 @@ uv run awsnews --stats
 ```
 EventBridge Scheduler（9:00 / 18:00 JST）→ Lambda（コンテナ, arm64）→ DynamoDB / Bedrock（jp. Nova 2 Lite）
                                                       ├→ Slack（Incoming Webhook。URL は Secrets Manager）
-                                                      └→ S3 ←OAC─ CloudFront（CloudFront Functions で Basic 認証）
+                                                      └→ S3 ←OAC─ CloudFront（認証なし）
                                        /api/* ─→ Lambda（Function URL, IAM 認証 + OAC）→ DynamoDB
 ```
 
@@ -98,8 +98,8 @@ CLI の版を固定しているのは、`aws-cdk-lib` 2.273.0 が読めるクラ
 2026-11-03 には、Docker Desktop を再起動しても、Docker を通さず crane や aws s3 cp で送っても止まり、
 Mac を再起動したら通った（AWS 向けの TCP 接続が送信キューを積んだまま止まっていた）。
 
-サイトの `/api/*` は、CloudFront の裏の Lambda（Function URL、IAM 認証 + OAC）が
-サイトと同じ Basic 認証を通ってから受ける。
+サイトの `/api/*` は、CloudFront の裏の Lambda（Function URL、IAM 認証 + OAC）が受ける。
+Function URL を直接は叩けないが、CloudFront 経由なら誰でも読み書きできる。
 
 | メソッドとパス | 中身 |
 |---|---|
@@ -145,20 +145,6 @@ Slack の Webhook の URL もコードと CDK には書かない。CDK が作る
 ```bash
 aws secretsmanager put-secret-value --region ap-northeast-1 \
   --secret-id aws-news/slack-webhook --secret-string 'https://hooks.slack.com/services/...'
-```
-
-パスワードはコードにも CDK にも書かない。デプロイ後に、出力の `AuthStoreArn` の
-KeyValueStore へキー `basic`（値は `ユーザー名:パスワード` の Base64）を登録する。
-キーが無いあいだは誰も通さない。
-
-KeyValueStore は CloudFront の一部なので、リージョンは `us-east-1` を指定する。
-
-```bash
-ARN=$(jq -r .AwsNews.AuthStoreArn infra/cdk-outputs.json)
-ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --region us-east-1 \
-  --kvs-arn "$ARN" --query ETag --output text)
-aws cloudfront-keyvaluestore put-key --region us-east-1 --kvs-arn "$ARN" --key basic \
-  --value "$(printf '%s' 'ユーザー名:パスワード' | base64)" --if-match "$ETAG"
 ```
 
 手動で 1 回動かすときは、出力の `FunctionName` を呼ぶ。

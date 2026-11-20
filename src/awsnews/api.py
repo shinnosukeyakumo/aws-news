@@ -7,7 +7,7 @@
 | GET  /api/settings | 通知するサービスと種類                                       |
 | POST /api/settings | 通知するサービスと種類を置き換える                           |
 
-認証は CloudFront Function（Basic 認証）が済ませている。
+認証は無い。CloudFront 経由なら誰でも読み書きできる（書けるのは pk="#settings" の項目だけ）。
 """
 
 from __future__ import annotations

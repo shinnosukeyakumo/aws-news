@@ -1,6 +1,6 @@
 """aws-news のスタック。
 
-EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 ← CloudFront（Basic 認証）
+EventBridge Scheduler → Lambda（コンテナ）→ DynamoDB / Bedrock → S3 ← CloudFront（認証なし。2026-11-21 に外した）
 サイトの /api/*（マイライブラリ・通知設定）
   → CloudFront → Lambda（Function URL）→ DynamoDB articles の設定項目（pk="#settings"）
 通知するサービスの新着 → Slack（Incoming Webhook。URL は Secrets Manager）
@@ -118,13 +118,6 @@ class AwsNewsStack(Stack):
         # Function URL は IAM 認証にして、CloudFront（OAC）からしか呼べないようにする
         api_url = api_fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
 
-        auth_store = cloudfront.KeyValueStore(self, "AuthStore")
-        auth_fn = cloudfront.Function(
-            self, "BasicAuth",
-            code=cloudfront.FunctionCode.from_file(file_path=str(HERE / "basic_auth.js")),
-            runtime=cloudfront.FunctionRuntime.JS_2_0,
-            key_value_store=auth_store,
-        )
         distribution = cloudfront.Distribution(
             self, "Distribution",
             default_root_object="index.html",
@@ -133,20 +126,15 @@ class AwsNewsStack(Stack):
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
-                function_associations=[cloudfront.FunctionAssociation(
-                    function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
             ),
             additional_behaviors={
-                # ライブラリと通知設定の読み書き。サイトと同じ Basic 認証を通してから Lambda に渡す。
-                # Authorization は OAC の署名で上書きされるので、Lambda には届かない
+                # ライブラリと通知設定の読み書き。認証は無いので、URL を知る人なら書き換えられる
                 "/api/*": cloudfront.BehaviorOptions(
                     origin=origins.FunctionUrlOrigin.with_origin_access_control(api_url),
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
                     allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
-                    function_associations=[cloudfront.FunctionAssociation(
-                        function=auth_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
                 ),
             },
             price_class=cloudfront.PriceClass.PRICE_CLASS_200,   # 日本を含む
@@ -215,6 +203,5 @@ class AwsNewsStack(Stack):
         )
 
         CfnOutput(self, "SiteUrl", value=f"https://{distribution.distribution_domain_name}/")
-        CfnOutput(self, "AuthStoreArn", value=auth_store.key_value_store_arn)
         CfnOutput(self, "FunctionName", value=fn.function_name)
         CfnOutput(self, "SlackSecretName", value=slack_secret.secret_name)

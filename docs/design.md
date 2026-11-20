@@ -1,7 +1,7 @@
 # ニュースサイト化の設計
 
 Discord への配信をやめ、選別・要約した記事をスマホで読めるニュースサイトとして公開する。
-サイトは定期的に自動で更新され、閲覧できるのは自分だけとする。
+サイトは定期的に自動で更新される。認証は 2026-11-21 に外した（下の「4. 認証」）。
 
 状態: 実装済み。2026-11-03 に ap-northeast-1 へデプロイし、手動実行でサイトの生成と Basic 認証を確認した。
 
@@ -12,7 +12,7 @@ Discord への配信をやめ、選別・要約した記事をスマホで読め
 
 - Discord や Slack の埋め込みは幅が狭く、スマホで読みにくい。1 記事を 1 枚のカードとして読める画面にする
 - Mac を閉じていても更新が止まらないよう、実行も配信も AWS 上で完結させる
-- 閲覧者は自分 1 人。認証は軽いものでよいが、URL を知られただけで読める状態にはしない
+- 閲覧者は自分 1 人。当初は URL を知られただけで読める状態にはしない方針だったが、2026-11-21 に認証を外した
 - 収集・採点のロジック（`collect.py` / `curator.py` / `config/sources.yaml`）は変えない。変えるのは「結果をどこに溜め、どう見せるか」だけ
 
 ## 全体の流れ
@@ -27,7 +27,7 @@ EventBridge Scheduler（毎日 9:00 / 18:00 JST）
        5. 直近 30 日分を DynamoDB から読み、HTML を組み立てる … site.py（新規）
        6. HTML と JSON を S3 に置く
 S3（非公開） ←OAC─ CloudFront ←HTTPS─ スマホ
-                      └ CloudFront Functions で Basic 認証
+                      └ 認証なし（2026-11-21 に Basic 認証を外した）
 ```
 
 採点（1〜4）とサイト生成（5〜6）を分けておく。
@@ -77,7 +77,14 @@ GSI `by-date`（パーティションキー `feed`、ソートキー `sort_at`�
 - HTML は `Cache-Control: max-age=60`。更新は 1 日 2 回なので、キャッシュ削除（invalidation）を使わず短い TTL で済ませる
 - ドメインは CloudFront の既定（`*.cloudfront.net`）。独自ドメインは今回は付けない
 
-### 4. 認証: CloudFront Functions の Basic 認証
+### 4. 認証: CloudFront Functions の Basic 認証（2026-11-21 に外した）
+
+2026-11-21 に八雲が「めんどいから認証機能はいらない」と決め、Basic 認証の関数と KeyValueStore を外した。
+載せているのは公開ニュースの要約だけなので、読まれても困らない。
+代わりに `/api/library` と `/api/settings` は URL を知る人なら誰でも書き換えられる。書ける先は articles テーブルの `pk="#settings"` の 2 項目だけで、記事そのものは書き換えられない（IAM の LeadingKeys 条件）。
+荒らされたら、ブラウザ側の localStorage に同じ内容が残っているので、保存し直せば戻る。
+
+以下は外す前の検討。
 
 | 案 | 採否 | 理由 |
 |---|---|---|
@@ -319,8 +326,7 @@ CDK を Python にするのは、アプリ本体と言語を揃えるため。
 |---|---|
 | DynamoDB テーブル | オンデマンド、GSI `by-date`、ポイントインタイムリカバリ有効 |
 | S3 バケット | パブリックアクセス全ブロック、SSE-S3 |
-| CloudFront ディストリビューション | OAC、HTTPS リダイレクト、CloudFront Functions（viewer-request） |
-| CloudFront KeyValueStore | Basic 認証の正解値 |
+| CloudFront ディストリビューション | OAC、HTTPS リダイレクト（認証は 2026-11-21 に外した） |
 | Lambda 関数 | コンテナイメージ、arm64、1024 MB、15 分 |
 | EventBridge Scheduler | 1 日 2 回、`Asia/Tokyo`。re:Invent の前後だけ、0・3・6・12・15・21 時を足して 3 時間おき（期間は `infra/stack.py` の `REINVENT_START` / `REINVENT_END`。毎年書き換える） |
 | IAM ロール（Lambda 用） | 下記の最小権限 |
