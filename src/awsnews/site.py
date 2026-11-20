@@ -84,7 +84,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html.lock,html.lock body{overflow:hidden}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f);font-size:15px;line-height:1.65;-webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
+body{margin:0;overflow-x:clip;background:var(--bg);color:var(--ink);font-family:var(--f);font-size:15px;line-height:1.65;-webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;cursor:pointer}
 a{color:inherit}
 .wrap{max-width:1240px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
@@ -108,7 +108,16 @@ a{color:inherit}
 .search kbd{position:absolute;right:8px;top:50%;transform:translateY(-50%)}
 kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;border:1px solid var(--rule);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--sub);background:var(--panel)}
 .hide-s{display:none}
-@media (min-width:640px){.hide-s{display:inline-flex}}
+@media (min-width:640px){.hide-s{display:inline-flex}.show-s{display:none}}
+/* スマホ：見出しの行を画面幅に収める。はみ出すと開くたびに表示がずれる */
+.ttl{display:flex;align-items:baseline;gap:10px;min-width:0}
+.hd-top h1{white-space:nowrap}
+@media (max-width:639.98px){
+  .hd-top{gap:6px}
+  .ttl{flex-direction:column;align-items:flex-start;gap:0}
+  .upd{font-size:11px;line-height:1.3}
+  .search input{font-size:16px}   /* 16px 未満だと iPhone が入力時に画面を拡大する */
+}
 
 /* 期間・カテゴリ */
 .bar{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-block:10px 0}
@@ -244,7 +253,7 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
 <body>
 <header class="hd" id="hd"><div class="wrap">
   <div class="hd-top">
-    <h1>__TITLE__</h1><span class="upd" id="upd"></span><button class="hbtn rl" id="reloadbtn" title="最新の記事を読み直す（R）" aria-label="最新の記事を読み直す">↻</button><span class="sp"></span>
+    <div class="ttl"><h1>__TITLE__</h1><span class="upd" id="upd"></span></div><button class="hbtn rl" id="reloadbtn" title="最新の記事を読み直す（R）" aria-label="最新の記事を読み直す">↻</button><span class="sp"></span>
     <button class="hbtn" id="libbtn" title="マイライブラリ（L）">ライブラリ<span class="n" id="libn" hidden></span></button>
     <button class="hbtn" id="setbtn" hidden title="Slack 通知の設定">通知</button>
     <button class="hbtn" id="themebtn" title="表示テーマを切り替える"></button>
@@ -369,7 +378,9 @@ footer{padding:8px 0 32px;font-size:12px;color:var(--faint)}
   let theme=LS.get('awsnews-theme','auto'); if(!THEMES[theme]) theme='auto';
   function applyTheme(){
     if(theme==='auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme=theme;
-    $('#themebtn').textContent='テーマ: '+THEMES[theme];
+    // スマホでは幅が足りないので、記号だけにする
+    $('#themebtn').innerHTML='<span class="show-s" aria-hidden="true">◐</span><span class="hide-s">テーマ: '+THEMES[theme]+'</span>';
+    $('#themebtn').setAttribute('aria-label','テーマ: '+THEMES[theme]);
   }
   applyTheme();
   // ブラウザのキャッシュを避けるため、クエリを付けて開き直す。CloudFront 側は最大 60 秒前の版になりうる
